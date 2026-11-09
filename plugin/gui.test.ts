@@ -113,7 +113,7 @@ test("composer pill uses its live routed session and remote client, never a paus
     options: { checkpoints: true }, signal,
     sessions: { current: () => current }, toast: { show: () => assert.fail("valid response") },
     dialogs: { open: () => ({ close() {} }) },
-    add: (registry: unknown, contribution: unknown) => { if (registry === ComposerPill) pill = contribution as ComposerPill },
+    add: (registry: unknown, contribution: unknown) => { if (registry === ComposerPill && (contribution as ComposerPill).id === "checkpoint") pill = contribution as ComposerPill },
   } as unknown as SetupContext<{}>)
   assert.equal(pill.id, "checkpoint")
   const input = { get session() { return current } } as ComposerPillProps
@@ -148,7 +148,7 @@ test("composer and stale palette callbacks cannot bypass disconnect, pending, or
     options: { checkpoints: true }, signal: new AbortController().signal,
     sessions: { current: () => current }, toast: { show: () => assert.fail("valid response") },
     add: (registry: unknown, contribution: unknown) => {
-      if (registry === ComposerPill) pill = contribution as ComposerPill
+      if (registry === ComposerPill && (contribution as ComposerPill).id === "checkpoint") pill = contribution as ComposerPill
       if (registry === Command) commands.push(contribution as () => CommandItem)
     },
   } as unknown as SetupContext<{}>)
@@ -184,7 +184,7 @@ test("composer pill reports RPC errors and retains an explicit status retry", as
   gui.setup!({
     options: { checkpoints: true }, signal: new AbortController().signal,
     sessions: { current: () => current }, toast: { show: () => assert.fail("status polling does not toast") },
-    add: (registry: unknown, contribution: unknown) => { if (registry === ComposerPill) pill = contribution as ComposerPill },
+    add: (registry: unknown, contribution: unknown) => { if (registry === ComposerPill && (contribution as ComposerPill).id === "checkpoint") pill = contribution as ComposerPill },
   } as unknown as SetupContext<{}>)
   const input = { session: current } as ComposerPillProps
   pill.show(input)!.rows!.find((row) => row.id === "refresh")!.run!()
@@ -192,4 +192,77 @@ test("composer pill reports RPC errors and retains an explicit status retry", as
   assert.equal(pill.show(input)!.label, "Checkpoint: error")
   assert.equal(pill.show(input)!.tone, "danger")
   assert.ok(pill.show(input)!.rows!.find((row) => row.id === "refresh")!.run)
+})
+
+test("polling keeps status and direct controls stable, coalesces reads, and cannot overwrite Pause", async () => {
+  const pills = new Map<string, ComposerPill>()
+  let polls = 0, pauses = 0
+  let finishStatus!: (value: { state: string; revision: number }) => void
+  const current = { id: "selected", key: "server\nselected", server: { connected: true, client: {
+    rpc: () => ({
+      status: () => { polls++; return new Promise(resolve => { finishStatus = resolve }) },
+      pause: async () => { pauses++; return { state: "paused", revision: 2 } },
+    }),
+  } } } as unknown as MountedSession
+  gui.setup!({
+    options: { checkpoints: true }, signal: new AbortController().signal,
+    sessions: { current: () => current }, toast: { show: () => assert.fail("valid response") },
+    add: (registry: unknown, item: unknown) => { if (registry === ComposerPill) pills.set((item as ComposerPill).id, item as ComposerPill) },
+  } as unknown as SetupContext<{}>)
+  const input = { session: current } as ComposerPillProps
+  const status = () => pills.get("checkpoint")!.show(input)!
+  const pause = () => pills.get("checkpoint-pause")!.show(input)!
+  const resume = () => pills.get("checkpoint-resume")!.show(input)!
+  const refresh = () => status().rows!.find(row => row.id === "refresh")!.run!()
+  refresh()
+  finishStatus({ state: "running", revision: 1 })
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(status().label, "Checkpoint: gate open")
+  refresh()
+  const rows = status().rows!.map(row => row.id)
+  assert.equal(status().label, "Checkpoint: gate open", "background read must not flash request in progress")
+  assert.equal(pause().label, "Pause")
+  assert.equal(resume().label, "Resume…")
+  assert.equal(pause().rows, undefined, "direct control, not another menu")
+  assert.ok(pause().run)
+  assert.ok(resume().run)
+  refresh()
+  assert.equal(polls, 2, "one outstanding background request per session")
+  assert.deepEqual(status().rows!.map(row => row.id), rows)
+  pause().run!()
+  assert.equal(pause().run, undefined, "actual mutations still disable duplicate actions")
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(pauses, 1)
+  assert.equal(status().label, "Checkpoint: paused")
+  finishStatus({ state: "running", revision: 1 })
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(status().label, "Checkpoint: paused", "late polling cannot reopen the displayed gate")
+})
+
+test("direct Resume supersedes a pending poll and opens review without resuming", async () => {
+  const pills = new Map<string, ComposerPill>()
+  let polls = 0, dialogs = 0
+  const resolvers: Array<(value: { state: string; revision: number }) => void> = []
+  const current = { id: "selected", key: "server\nselected", server: { connected: true, client: {
+    rpc: () => ({
+      status: () => { polls++; return new Promise(resolve => { resolvers.push(resolve) }) },
+      resume: () => assert.fail("review never automatically resumes"),
+    }),
+  } } } as unknown as MountedSession
+  gui.setup!({
+    options: { checkpoints: true }, signal: new AbortController().signal,
+    sessions: { current: () => current }, toast: { show: () => assert.fail("valid review") },
+    dialogs: { open: () => { dialogs++; return { close() {} } } },
+    add: (registry: unknown, item: unknown) => { if (registry === ComposerPill) pills.set((item as ComposerPill).id, item as ComposerPill) },
+  } as unknown as SetupContext<{}>)
+  const input = { session: current } as ComposerPillProps
+  pills.get("checkpoint")!.show(input)!.rows!.find(row => row.id === "refresh")!.run!()
+  pills.get("checkpoint-resume")!.show(input)!.run!()
+  assert.equal(polls, 2)
+  resolvers[1]!({ state: "paused", revision: 8 })
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(dialogs, 1)
+  resolvers[0]!({ state: "running", revision: 7 })
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(pills.get("checkpoint")!.show(input)!.label, "Checkpoint: paused")
 })

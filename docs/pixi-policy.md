@@ -50,7 +50,9 @@ failure rolls back registrations it already created.
 - `--manifest-path` / `-m` select an existing `pixi.toml` or Pixi-enabled
   `pyproject.toml`. The tool hook derives its root from the **current session
   location on every invocation**, including moved sessions. Discovery searches
-  cwd ancestors up to that root. An explicit cwd outside that root receives its
+  cwd ancestors up to that root. The model-facing native shell tool selects cwd
+  with its `workdir` input; the lower-level `shell.create.before` hook exposes
+  the resolved directory as `cwd`. An explicit cwd outside that root receives its
   own boundary, not an exemption. The sessionless shell hook uses the plugin root
   for descendant cwd values and otherwise the command's real cwd. An immediately
   preceding matching tool check supplies its session boundary. For runs, selected manifest,
@@ -68,7 +70,7 @@ failure rolls back registrations it already created.
   options leave a visible command. A shell wrapper must have one literal `-c`
   argument. Unsupported wrapper options fail closed.
 - A simple `cd child && command` tracks the new cwd, including manifest discovery.
-  Use the native cwd input for more complex working-directory requirements.
+  Use the native shell tool's `workdir` input for more complex working-directory requirements.
 
 Direct Python interpreters, Python scripts (including absolute `.pixi` paths),
 common Python tooling, and directly named local Python-shebang scripts are

@@ -14,6 +14,8 @@ test("isolated SDK dispatch enforces Pixi and durable checkpoint hooks with fake
   const home = await realpath(await mkdtemp(path.join(repository, ".local", "dispatch-")))
   const root = path.join(home, "synthetic-workspace")
   await mkdir(root)
+  const project = path.join(root, "nested-project")
+  await mkdir(project)
   const pixi = (await promisify(execFile)("/usr/bin/which", ["pixi"])).stdout.trim()
   assert.ok(path.isAbsolute(pixi))
   const script = `
@@ -26,11 +28,12 @@ test("isolated SDK dispatch enforces Pixi and durable checkpoint hooks with fake
     import {writeFile, access} from 'node:fs/promises';
     import path from 'node:path';
     const root = ${JSON.stringify(root)};
+    const project = ${JSON.stringify(project)};
     const marker = path.join(root, 'forbidden-marker');
     const missing = async () => assert.rejects(access(marker), {code:'ENOENT'});
     let requests = 0, calls = [], contexts = [], shellEvents = [], toolEvents = [], controller, pendingObserved = false, shellCompleted = false;
-    await writeFile(path.join(root,'pixi.toml'), '[workspace]\\nname = "synthetic-dispatch"\\nchannels = []\\nplatforms = ["osx-arm64"]\\n[tasks]\\nprobe = "pwd"\\n');
-    await promisify(execFile)(${JSON.stringify(pixi)}, ['lock'], {cwd:root,env:process.env});
+    await writeFile(path.join(project,'pixi.toml'), '[workspace]\\nname = "synthetic-dispatch"\\nchannels = []\\nplatforms = ["osx-arm64"]\\n[tasks]\\nprobe = "pwd"\\n');
+    await promisify(execFile)(${JSON.stringify(pixi)}, ['lock'], {cwd:project,env:process.env});
     const fakeFetch = async (input, init) => {
       const request = new Request(input, init);
       assert.equal(request.url, 'https://dispatch.invalid/v1/chat/completions');
@@ -76,7 +79,7 @@ test("isolated SDK dispatch enforces Pixi and durable checkpoint hooks with fake
         }));
         await ctx.tool.hook('execute.after', event => {
           if(event.tool==='shell' && event.status==='completed') {
-            assert.ok(JSON.stringify(event.result.content).includes(root),'real pwd output contains synthetic workspace');
+            assert.ok(JSON.stringify(event.result.content).includes(project),'real pwd output contains selected native workdir');
             shellCompleted = true;
           }
         });
@@ -123,7 +126,7 @@ test("isolated SDK dispatch enforces Pixi and durable checkpoint hooks with fake
       assert.ok(shellEvents.includes(command),'explicit shell reaches native shell hook');
       await missing();
       stage = 'allowed Pixi model shell';
-      await run([{name:'shell',input:{command:'pixi run --locked probe',description:'Synthetic benign pwd task'}}]);
+      await run([{name:'shell',input:{command:'pixi run --locked probe',workdir:project,description:'Synthetic benign pwd task in selected workdir'}}]);
       assert.ok(shellEvents.includes('pixi run --locked probe'));
       assert.equal(pendingObserved,true);
       assert.equal(shellCompleted,true);

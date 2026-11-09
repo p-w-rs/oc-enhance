@@ -288,9 +288,10 @@ export async function installPixiPolicy(ctx: Plugin.Context): Promise<Plugin.Cle
       const value = input.input as Record<string, unknown>
       if (typeof value.command !== "string") deny("shell command must be a string")
       const session = await ctx.session.get({ sessionID: input.sessionID })
-      if (value.cwd !== undefined && typeof value.cwd !== "string") deny("shell cwd must be a string")
+      // The native model-facing shell tool uses workdir; create.before uses cwd.
+      if (value.workdir !== undefined && typeof value.workdir !== "string") deny("shell workdir must be a string")
       const root = await realpath(session.location.directory)
-      const requestedCwd = typeof value.cwd === "string" ? value.cwd : root
+      const requestedCwd = typeof value.workdir === "string" ? value.workdir : root
       const cwd = await realpath(path.resolve(root, requestedCwd))
       // An explicitly authorized external cwd gets its own inspection boundary;
       // policy checks stay enabled instead of binding all sessions to pluginRoot.

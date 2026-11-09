@@ -16,6 +16,70 @@ The evidence adapter requires a host with `permission.assert` (tested with **Ope
 
 ## Setup
 
+### Install in your own OpenCode Desktop
+
+Requires **OpenCode V2 2.2.6+** (tested with 2.2.6), **macOS 15+ on Apple Silicon**,
+and **[Pixi](https://pixi.sh) 0.81.0+**. No separate Python, Node, npm or model
+service is needed. This is a release candidate; review the safety limits below.
+
+Download this repository with **Code → Download ZIP**, extract it, open a terminal
+in the extracted folder, and run:
+
+```sh
+pixi run --locked install --checkpoints --pixi-guard --evidence
+```
+
+Or, if you already have Git:
+
+```sh
+git clone https://github.com/p-w-rs/open-enhance.git
+cd open-enhance
+pixi run --locked install --checkpoints --pixi-guard --evidence
+```
+
+Each flag explicitly enables that feature; omit any you do not want. Installation
+downloads the evidence backend/model during setup, builds the GUI and prepares an
+independent snapshot under `~/.local/share/open-enhance/releases/` (or
+`$XDG_DATA_HOME/open-enhance/releases/`). It then backs up and updates your global
+OpenCode JSON/JSONC configuration, preserving comments, unrelated plugins/settings
+and existing open-enhance options. It records Pixi's absolute path for Desktop.
+It does not select a model, change native permissions, or restart OpenCode.
+Desktop's bundled CLI is detected even when an older CLI is on your terminal PATH.
+
+Once installed, look above the composer for **Checkpoint: …**, **Pause**, and
+**Resume…**. Resume always opens a review dialog. **Gate open** means work is
+permitted, not that the agent is working or that it is safe to close the app.
+For evidence, ask the agent to use `open_enhance_search` for a document question;
+native grep/glob/read remain preferred for exact code searches.
+
+Config reload is automatic; use `/reload` if needed. You can remove the downloaded
+source folder after a snapshot installation. Keep snapshots and Pixi installed.
+Update between active tasks: download the new source (or `git pull --ff-only` in
+a clean checkout), then rerun the install command. Existing enabled features stay
+enabled; disable them explicitly in plugin options if desired. Recovery commands:
+
+```sh
+pixi run --locked install --rollback
+pixi run --locked install --uninstall
+```
+
+Rollback requires a prior managed installation. Uninstall removes only this
+plugin's config entry; snapshots, evidence data and stored checkpoints remain.
+If installation reports an existing lock or incomplete snapshot, inspect the
+reported path and confirm no installer is running; do not delete broad data trees.
+
+With checkpoints enabled, agents must be permitted to maintain
+`open_enhance_checkpoint`. Custom/read-only agents that deny it fail closed;
+installation deliberately does not broaden their permissions. See
+[checkpoint limits](docs/checkpoints.md) and [desktop controls](docs/desktop.md).
+
+OpenClaude can be installed alongside this plugin using its own
+[`pixi run --locked install`](https://github.com/p-w-rs/open-claude#install).
+Neither installer replaces the other's config entry. Source remains `UNLICENSED`;
+installation instructions are not a license grant or production certification.
+
+### Development setup
+
 From this checkout:
 
 ```sh
@@ -62,7 +126,7 @@ All features are independently opt-in:
 }
 ```
 
-`pixiExecutable` is needed when Desktop's PATH does not include Pixi. It controls plugin-owned Python workers; there is no direct-Python fallback. Keep the checkout/install directory and its Pixi environment available while the plugin runs. Do not enable unbuilt GUI entries: run `build` first. Desktop GUI contributions require a global plugin entry; installation does **not** edit that configuration for you.
+`pixiExecutable` is needed when Desktop's PATH does not include Pixi. It controls plugin-owned Python workers; there is no direct-Python fallback. Keep the checkout/install directory and its Pixi environment available while the plugin runs. Do not enable unbuilt GUI entries: run `build` first. Desktop GUI contributions require a global plugin entry. The development `setup` task does **not** edit configuration; the explicit `install` task above does.
 
 ### Python only through Pixi
 
@@ -72,7 +136,7 @@ The guard inspects native shell tool dispatch and shell creation. It rejects amb
 
 ### Durable pause
 
-- **Checkpoint controls** use the native composer-pill row above the composer, with a session-header fallback. Resume review uses a native dialog; Send/Stop is unchanged.
+- **Checkpoint controls** provide stable status plus direct **Pause** and **Resume…** controls in the native composer-pill row, with a session-header fallback. Background polling does not flash the label or disable actions. Resume review uses a native dialog; Send/Stop is unchanged.
 - Desktop commands/shortcuts: Pause `⌘⇧P`, Resume `⌘⇧R` (customizable in OpenCode).
 - Server commands: `/enhance-pause`, `/enhance-status`, `/enhance-resume`.
 - `/enhance-forget confirm` explicitly removes settled checkpoint history for the current session tree; paused or unresolved work cannot be forgotten.

@@ -20,6 +20,7 @@ export default Plugin.define({
     const [views, setViews] = createSignal<Record<string, View>>({})
     const [form, setForm] = createSignal<{ session: MountedSession; revision: number; reconciliation: string; acknowledgeUnknown: boolean; review: string }>()
     const versions = new Map<string, number>()
+    const statusRequests = new Map<string, number>()
     let closeResume: (() => void) | undefined
     const view = (session: MountedSession) => views()[session.key] ?? unknown
     const update = (key: string, next: View) => setViews((previous) => ({ ...previous, [key]: next }))
@@ -27,22 +28,31 @@ export default Plugin.define({
     const label = (session: MountedSession) => !session.server.connected ? "disconnected" : session.pending ? "session pending" :
       view(session).busy ? "request in progress" : view(session).state === "running" ? "gate open" : view(session).state
 
-    async function run(session: MountedSession, action: Action, resume?: ResumeInput) {
+    async function run(session: MountedSession, action: Action, resume?: ResumeInput, review = false) {
       if (disabled(session) || ctx.signal.aborted || (action !== "status" && ctx.sessions.current()?.key !== session.key)) return
       const key = session.key
+      if (action === "status" && !review && statusRequests.has(key)) return
       const version = (versions.get(key) ?? 0) + 1
       versions.set(key, version)
-      update(key, { state: action === "pause" ? "pending" : "unknown", busy: true })
+      // Reading status must not flash the label or disable Pause every two seconds.
+      // Mutations supersede pending reads; a late poll cannot overwrite their state.
+      if (action === "status" && !review) statusRequests.set(key, version)
+      else {
+        statusRequests.delete(key)
+        update(key, { state: action === "pause" ? "pending" : "unknown", busy: true })
+      }
       try {
         const result = await callCheckpoint(session, action, ctx.signal, resume)
         if (!ctx.signal.aborted && versions.get(key) === version) update(key, { state: result.state, busy: false })
         if (action === "resume" && result.continuation === "unconfirmed") ctx.toast.show({ title: "Checkpoint gate opened", description: "Continuation was not confirmed. Check the session before submitting another prompt; do not repeat an uncertain operation.", variant: "error" })
-        return result
+        if (!ctx.signal.aborted && versions.get(key) === version) return result
       } catch {
         if (!ctx.signal.aborted && versions.get(key) === version) {
           update(key, { state: "error", busy: false })
           if (action !== "status") ctx.toast.show({ title: "Checkpoint request failed", description: action === "resume" ? "No success confirmed. The revision may be stale; cancel and reopen Resume to refresh it. Check the server before retrying." : "Status is unknown. Retry or check the session server.", variant: "error" })
         }
+      } finally {
+        if (statusRequests.get(key) === version) statusRequests.delete(key)
       }
     }
 
@@ -50,7 +60,7 @@ export default Plugin.define({
       if (disabled(session) || ctx.signal.aborted || ctx.sessions.current()?.key !== session.key) return
       closeResume?.()
       setForm(undefined)
-      const result = await run(session, "status")
+      const result = await run(session, "status", undefined, true)
       if (ctx.signal.aborted || ctx.sessions.current()?.key !== session.key) return
       if (!result || !Number.isSafeInteger(result.revision)) {
         ctx.toast.show({ title: "Cannot open resume", description: "A current checkpoint revision is required. Retry after checking the server.", variant: "error" })
@@ -106,6 +116,21 @@ export default Plugin.define({
       }),
     })
 
+    for (const action of ["pause", "resume"] as const) {
+      ctx.add(ComposerPill, {
+        id: `checkpoint-${action}`, order: action === "pause" ? 51 : 52,
+        show: (input) => ({
+          label: action === "pause" ? "Pause" : "Resume…",
+          title: action === "pause" ? "Pause at checkpoint; not a safe-to-close guarantee" : "Review checkpoint before resuming",
+          // No menu: these are direct controls. Resume still always opens review.
+          run: disabled(input.session) ? undefined : () => {
+            if (action === "pause") void run(input.session, "pause")
+            else void openResume(input.session)
+          },
+        }),
+      })
+    }
+
     function Controls(props: { session: MountedSession; active: boolean }) {
       createEffect(() => {
         const session = props.session
@@ -116,6 +141,7 @@ export default Plugin.define({
         if (!active || session.pending) return
         if (!connected) {
           versions.set(session.key, (versions.get(session.key) ?? 0) + 1)
+          statusRequests.delete(session.key)
           update(session.key, unknown)
           return
         }

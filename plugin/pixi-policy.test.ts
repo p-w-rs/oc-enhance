@@ -64,7 +64,7 @@ async function harness(options: Record<string, unknown> = { pixiGuard: true }, f
     hooks, disposed, cleanup, reads, deniedReads, context,
     setSessionRoot: (directory: string) => { sessionRoot = directory },
     shell: async (command: string, cwd = root) => hooks.get("shell.create.before")!({ command, cwd }),
-    tool: async (command: string, cwd?: string) => hooks.get("tool.execute.before")!({ tool: "shell", sessionID: "synthetic", agent: "agent-synthetic", messageID: "message-synthetic", id: "call-synthetic", input: { command, ...(cwd ? { cwd } : {}) } }),
+    tool: async (command: string, workdir?: string) => hooks.get("tool.execute.before")!({ tool: "shell", sessionID: "synthetic", agent: "agent-synthetic", messageID: "message-synthetic", id: "call-synthetic", input: { command, ...(workdir ? { workdir } : {}) } }),
   }
 }
 
@@ -225,6 +225,20 @@ test("uses moved session roots and keeps policy active for sessionless or explic
   await assert.rejects(() => guard.tool("python", movedRoot), /direct Python/)
 })
 
+test("native workdir authorizes selected sources and hands proof only to the matching shell cwd", async () => {
+  const guard = await harness()
+  const file = path.join(movedRoot, "script.py")
+  guard.deniedReads.add(file)
+  await assert.rejects(() => guard.tool("pixi run --script script.py", movedRoot), /synthetic native read denied/)
+  assert.deepEqual(guard.reads.at(-1).resources, [file])
+  guard.deniedReads.delete(file)
+  await guard.tool("pixi run --script script.py", movedRoot)
+  await assert.rejects(() => guard.shell("pixi run --script script.py", root), /attributed native shell tool/)
+  await guard.shell("pixi run --script script.py", movedRoot)
+  await assert.rejects(() => guard.shell("pixi run --script script.py", movedRoot), /attributed native shell tool/)
+  await assert.rejects(() => guard.tool("python", movedRoot), /direct Python/)
+})
+
 test("source reads require exact native read attribution and denials propagate", async () => {
   const guard = await harness()
   const file = path.join(root, "script.py")
@@ -294,7 +308,7 @@ test("ignores non-shell tools and fails closed for malformed shell inputs", asyn
   const guard = await harness()
   const callback = guard.hooks.get("tool.execute.before")!
   await callback({ tool: "read", input: { command: "python" } })
-  for (const input of [null, "python", {}, { command: 42 }, { command: "pwd", cwd: 42 }]) {
+  for (const input of [null, "python", {}, { command: 42 }, { command: "pwd", workdir: 42 }]) {
     await assert.rejects(async () => callback({ tool: "shell", input }), /open-enhance Pixi policy:/)
   }
 })

@@ -29,9 +29,11 @@ audit = { features = ["audit"] }
 
 [tasks]
 js-install = "npm ci --ignore-scripts --cache .local/npm-cache"
+js-lock = "npm install --package-lock-only --ignore-scripts --cache .local/npm-cache"
+install = { cmd = "node scripts/install.mjs", depends-on = ["build"] }
 setup = { cmd = "python -m open_enhance.setup", depends-on = ["js-install"] }
 check = { cmd = "npm run check", depends-on = ["js-install"] }
-build = "npm run build"
+build = { cmd = "npm run build", depends-on = ["js-install"] }
 package-check = { cmd = "npm run pack:check", depends-on = ["build"] }
 package-acceptance = { cmd = "node scripts/package-acceptance.mjs", depends-on = ["package-check"] }
 cli-acceptance = "node scripts/cli-acceptance.mjs"

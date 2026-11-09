@@ -15,7 +15,8 @@
         "darwin"
       ],
       "dependencies": {
-        "@opencode/plugin": "2.2.6"
+        "@opencode/plugin": "2.2.6",
+        "jsonc-parser": "3.3.1"
       },
       "devDependencies": {
         "@opencode/cli-darwin-arm64": "2.2.6",
@@ -5303,7 +5304,6 @@
       "version": "3.3.1",
       "resolved": "https://registry.npmjs.org/jsonc-parser/-/jsonc-parser-3.3.1.tgz",
       "integrity": "sha512-HUgH65KyejrUFPvHFPbqOY0rsFip3Bo5wb4ngvdi1EpCYWUQDC5V+Y7mZws+DLkr4M//zQJoanu1SP+87Dv1oQ==",
-      "dev": true,
       "license": "MIT"
     },
     "node_modules/jsonparse": {
