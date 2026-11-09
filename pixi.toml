@@ -1,0 +1,46 @@
+[workspace]
+name = "open-enhance"
+version = "0.2.0"
+description = "Measured, optional evidence enhancements for OpenCode"
+channels = ["conda-forge"]
+platforms = [{ platform = "osx-arm64", macos = "15.0" }]
+
+[dependencies]
+python = "3.12.*"
+nodejs = "26.*"
+ripgrep = "14.*"
+
+[pypi-dependencies]
+open-enhance = { path = ".", editable = true }
+pytest = "==9.0.3"
+pypdf = "==6.21.4"
+huggingface-hub = "==1.1.2"
+onnxruntime = "==1.23.2"
+
+[feature.decisions.pypi-dependencies]
+mlx-decision = "==1.2.0"
+
+[feature.audit.pypi-dependencies]
+pip-audit = "==2.10.1"
+
+[environments]
+decisions = { features = ["decisions"] }
+audit = { features = ["audit"] }
+
+[tasks]
+js-install = "npm ci --ignore-scripts --cache .local/npm-cache"
+setup = { cmd = "python -m open_enhance.setup", depends-on = ["js-install"] }
+check = { cmd = "npm run check", depends-on = ["js-install"] }
+build = "npm run build"
+package-check = { cmd = "npm run pack:check", depends-on = ["build"] }
+package-acceptance = { cmd = "node scripts/package-acceptance.mjs", depends-on = ["package-check"] }
+cli-acceptance = "node scripts/cli-acceptance.mjs"
+release-dir = "node -e \"require('node:fs').mkdirSync('.local/release',{recursive:true,mode:448})\""
+python-audit = { cmd = "pip-audit --path .pixi/envs/default/lib/python3.12/site-packages --format json --output .local/release/python-audit.json", default-environment = "audit", depends-on = ["release-dir"] }
+release-check = { cmd = "npm run release:check", depends-on = ["js-install"] }
+test = { cmd = "python -m pytest -q && npm test", depends-on = ["check"] }
+evaluate = "python -m open_enhance.evaluate"
+search = "python -m open_enhance.cli search"
+doctor = "python -m open_enhance.cli doctor"
+worker = "python -m open_enhance.cli rpc"
+decision-evaluate = { cmd = "python -m open_enhance.decisions", default-environment = "decisions" }

@@ -1,0 +1,48 @@
+{
+  "name": "open-enhance",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./plugin/index.ts",
+    "./rpc": "./plugin/rpc.ts",
+    "./gui-experimental": "./dist/gui-experimental.cjs"
+  },
+  "description": "Opt-in Pixi execution policy, durable pause checkpoints, and source-verified evidence for OpenCode V2",
+  "engines": { "node": ">=26.4.0" },
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "license": "UNLICENSED",
+  "files": ["plugin/*.ts", "plugin/*.tsx", "!plugin/*.test.ts", "src/open_enhance/*.py", "scripts/*.mjs", "dist/gui-experimental.cjs", "vendor", "docs", "README.md", "pixi.toml", "pixi.lock", "pyproject.toml", "models.lock.json", "npm-shrinkwrap.json", "tsconfig.json", "vite.config.ts"],
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test plugin/*.test.ts",
+    "build": "vite build",
+    "pack:check": "node scripts/package-check.mjs",
+    "release:check": "node scripts/release-check.mjs"
+  },
+  "dependencies": {
+    "@opencode/plugin": "2.2.6"
+  },
+  "overrides": {
+    "@opencode/util@2.2.6": {
+      "glob": "14.0.4",
+      "minimatch": "11.0.5"
+    },
+    "gitlab-ai-provider@6.23.1": "$gitlab-ai-provider",
+    "rimraf@5.0.10": {
+      "glob": "14.0.4"
+    }
+  },
+  "devDependencies": {
+    "gitlab-ai-provider": "file:vendor/gitlab-ai-provider-6.23.1-open-enhance.1.tgz",
+    "@opencode/cli-darwin-arm64": "2.2.6",
+    "@opencode/sdk": "2.2.6",
+    "@types/node": "24.10.0",
+    "solid-js": "1.9.18",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vite": "8.3.6",
+    "vite-plugin-solid": "2.11.15"
+  }
+}
