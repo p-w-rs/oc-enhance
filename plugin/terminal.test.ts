@@ -1,6 +1,6 @@
 import { after, before, test } from "node:test"
 import assert from "node:assert/strict"
-import { spawn, type ChildProcess } from "node:child_process"
+import { spawn, spawnSync, type ChildProcess } from "node:child_process"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -19,6 +19,9 @@ const api = async (method: string, route: string, body?: unknown) => {
 }
 
 before(async () => {
+  // The real OpenCode server (pinned), installed into .local/host on first use.
+  const result = spawnSync(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../scripts/smoke-host.mjs", import.meta.url)), "--install-cli"], { stdio: "inherit" })
+  if (result.status !== 0) throw new Error("Could not install the OpenCode CLI for the terminal tests")
   home = await mkdtemp(path.join(tmpdir(), "oe-term-"))
   await mkdir(path.join(home, "ws"))
   const port = 41000 + Math.floor(Math.random() * 15000)
