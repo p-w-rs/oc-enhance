@@ -13,7 +13,7 @@ export const EnhanceRpc = {
     state: { input: object({ sessionID }), output },
     session: { input: object({ sessionID }, ["sessionID"]), output },
     update: {
-      input: object({ notes: { type: "boolean" }, documents: { type: "boolean" }, search: { type: "boolean" }, terminals: { type: "boolean" }, pixi: { type: "boolean" }, terminalWrite: { enum: ["allow", "ask"] } }),
+      input: object({ notes: { type: "boolean" }, documents: { type: "boolean" }, search: { type: "boolean" }, terminals: { type: "boolean" }, pixi: { type: "boolean" }, knowhow: { type: "boolean" }, terminalWrite: { enum: ["allow", "ask"] } }),
       output,
     },
     installSearch: { input: object({}), output },

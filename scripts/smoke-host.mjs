@@ -119,7 +119,7 @@ try {
   assert.equal(code, 0, `opencode exited ${code}; see ${logs}`)
   assert.equal(calls.length, 0, "every scripted call was made")
   assert.ok(stdout.includes("OC_ENHANCE_SMOKE_COMPLETE"), "run completed")
-  assert.doesNotMatch(stderr, /\[oc-enhance\] (disabled|reload failed|pixi skill not registered)/, "no plugin warnings")
+  assert.doesNotMatch(stderr, /\[oc-enhance\] (disabled|reload failed|skills not registered)/, "no plugin warnings")
   for (const name of ["save_task_notes", "task_handoff", "read_document", "search_project", "terminal_list", "terminal_write"]) assert.ok(toolNames.includes(name), `${name} offered`)
   assert.match(systems.at(-1), /Python only through Pixi/)
   assert.match(systems.at(-1), /Goal: Answer travel and budget questions/, "task notes reach the model")

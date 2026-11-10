@@ -4,7 +4,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 export const PLUGIN_ID = "oc-enhance"
-export const VERSION = "1.0.0"
+export const VERSION = "1.1.0"
 
 /** `$XDG_DATA_HOME/oc-enhance` unless configured. */
 export const dataDirectory = (configured?: string) => configured ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), PLUGIN_ID)
@@ -22,10 +22,12 @@ export interface Settings {
   readonly terminalWrite: "allow" | "ask"
   /** The pixi skill and a one-line reminder to use Pixi for Python. */
   readonly pixi: boolean
+  /** Machine-learning know-how skills (training, edge deployment, GPU kernels). */
+  readonly knowhow: boolean
 }
 
-export const DEFAULTS: Settings = { notes: true, documents: true, search: true, terminals: true, terminalWrite: "allow", pixi: true }
-const BOOLEANS = ["notes", "documents", "search", "terminals", "pixi"] as const
+export const DEFAULTS: Settings = { notes: true, documents: true, search: true, terminals: true, terminalWrite: "allow", pixi: true, knowhow: true }
+const BOOLEANS = ["notes", "documents", "search", "terminals", "pixi", "knowhow"] as const
 
 export function normalizeSettings(raw: unknown, base: Settings = DEFAULTS): Settings {
   const value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {}

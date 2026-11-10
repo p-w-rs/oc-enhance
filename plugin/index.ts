@@ -24,7 +24,9 @@ export function parseOptions(raw: unknown): EnhanceOptions {
   return options.dataDirectory ? { dataDirectory: options.dataDirectory as string } : {}
 }
 
-const SKILL = fileURLToPath(new URL("../skill/pixi/SKILL.md", import.meta.url))
+const SKILLS = fileURLToPath(new URL("../skill/", import.meta.url))
+/** Bundled know-how. `pixi` follows the Pixi setting, the others the know-how setting. */
+const SKILL_IDS = ["pixi", "ml-training", "ml-deploy", "gpu-kernels"] as const
 const PIXI_HINT = "Python only through Pixi: use `pixi run --script file.py` (PEP 723 inline dependencies) for standalone scripts and a Pixi workspace for projects; never call python, pip, uv, conda or venv directly. Prefer Pixi-managed toolchains for other languages too. Load the pixi skill for details."
 const warn = (message: string, error?: unknown) => console.warn(`[${PLUGIN_ID}] ${message}${error ? `: ${error instanceof Error ? error.message : String(error)}` : ""}`)
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value)
@@ -187,16 +189,23 @@ export function createPlugin(): Plugin.Plugin {
 
         registrations.push(...await installTerminals(ctx, { enabled: () => settings.current().terminals, write: () => settings.current().terminalWrite }))
 
-        // ---- Pixi know-how ----
+        // ---- Know-how (skills, loaded by agents only when needed) ----
         let skillReady = false
         try {
-          const content = await readFile(SKILL, "utf8")
-          const description = /^description:\s*(.+)$/m.exec(content)?.[1] ?? "Pixi know-how"
+          const skills = await Promise.all(SKILL_IDS.map(async id => {
+            const path = join(SKILLS, id, "SKILL.md")
+            const content = await readFile(path, "utf8")
+            return { id, path, content, description: /^description:\s*(.+)$/m.exec(content)?.[1] ?? id }
+          }))
           registrations.push(await ctx.skill.transform(editor => {
-            if (settings.current().pixi) editor.add({ id: "pixi" as never, name: "pixi" as never, description, path: SKILL as never, content })
+            const current = settings.current()
+            for (const skill of skills) {
+              if (skill.id === "pixi" ? !current.pixi : !current.knowhow) continue
+              editor.add({ id: skill.id as never, name: skill.id as never, description: skill.description, path: skill.path as never, content: skill.content })
+            }
           }))
           skillReady = true
-        } catch (error) { warn("pixi skill not registered", error) }
+        } catch (error) { warn("skills not registered", error) }
 
         // ---- Pause gate, notes in context ----
         registrations.push(await ctx.tool.hook("execute.before", async input => {
