@@ -40,17 +40,18 @@ export function configure(source, target, releases, options = {}, sourceRoot = r
   if (target && indices.length === 1 && JSON.stringify(plugins[indices[0]]) === JSON.stringify(entry)) return source
   if (!target && !indices.length) return source
   let updated = source
-  if (!target) {
-    for (const index of indices.reverse()) updated = applyEdits(updated, modify(updated, ["plugins", index], undefined, format))
-  } else if (!Array.isArray(config.plugins)) updated = applyEdits(updated, modify(updated, ["plugins"], [entry], format))
-  else if (!indices.length) updated = applyEdits(updated, modify(updated, ["plugins", plugins.length], entry, format))
-  else {
-    updated = applyEdits(updated, modify(updated, ["plugins", indices[0]], entry, format))
-    for (const index of indices.slice(1).reverse()) updated = applyEdits(updated, modify(updated, ["plugins", index], undefined, format))
-  }
+  let expected
+  if (!Array.isArray(config.plugins)) expected = [entry]
+  else if (!indices.length) expected = [...plugins, entry]
+  else expected = plugins.flatMap((value, index) => !indices.includes(index) ? [value] : target && index === indices[0] ? [entry] : [])
+  if (target && Array.isArray(config.plugins) && indices.length === 1) updated = applyEdits(updated, modify(updated, ["plugins", indices[0]], entry, format))
+  else if (target && Array.isArray(config.plugins) && !indices.length) updated = applyEdits(updated, modify(updated, ["plugins", plugins.length], entry, format))
+  // jsonc-parser 3.3.1 corrupts single-line arrays when removing an element, so removals rewrite the whole
+  // plugins array (comments inside that array are lost; the rest of the document is kept).
+  else updated = applyEdits(updated, modify(updated, ["plugins"], expected, format))
   const updatedErrors = []
-  parse(updated, updatedErrors, { allowTrailingComma: true })
-  if (updatedErrors.length) throw new Error("Configuration edit failed validation; no configuration changed")
+  const reparsed = parse(updated, updatedErrors, { allowTrailingComma: true })
+  if (updatedErrors.length || JSON.stringify(reparsed?.plugins) !== JSON.stringify(expected)) throw new Error("Configuration edit failed validation; no configuration changed")
   return updated
 }
 

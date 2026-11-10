@@ -67,3 +67,14 @@ test("installed snapshot verification rejects tampering and unsafe manifests", a
     await assert.rejects(verifySnapshot(directory), /Incomplete snapshot/)
   } finally { await rm(directory, { recursive: true, force: true }) }
 })
+
+test("uninstall from a one-line plugins array with an options object keeps the config valid", () => {
+  const source = '{\n  // mine\n  "plugins": ["/other", { "package": "/data/releases/x", "options": { "checkpoints": true } }, "/last"]\n}\n'
+  const removed = configure(source, undefined, "/data/releases")
+  assert.deepEqual(parse(removed).plugins, ["/other", "/last"])
+  assert.match(removed, /\/\/ mine/)
+  const last = '{\n  "plugins": ["/other", "/data/releases/x"]\n}\n'
+  assert.deepEqual(parse(configure(last, undefined, "/data/releases")).plugins, ["/other"])
+  const moved = configure(source, "/data/releases/y", "/data/releases")
+  assert.deepEqual(parse(moved).plugins[1], { package: "/data/releases/y", options: { checkpoints: true } })
+})
