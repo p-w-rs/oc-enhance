@@ -117,6 +117,7 @@ export class Backend {
 
   /** Downloads, verifies and unpacks everything (about 290 MB). Safe to call again; finished downloads are reused. */
   install(signal?: AbortSignal): Promise<void> {
+    this.#installing ??= { step: "Starting the download", done: 0, total: downloads(this.platform).length + 1 }
     this.#task ??= this.#install(signal).finally(() => { this.#task = undefined; this.#installing = undefined })
     return this.#task
   }
@@ -156,6 +157,7 @@ export class Backend {
       await rm(cache, { recursive: true, force: true })
       const runtime = await this.runtime()
       if (!runtime) throw new Error("Installed, but the search engine files could not be found afterwards")
+      this.#installing = { step: "Checking the search engine (first start can take a minute)", done: items.length, total: items.length + 1 }
       await this.selfTest(runtime)
     } catch (error) {
       this.#error = error instanceof Error ? error.message : String(error)

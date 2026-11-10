@@ -77,6 +77,7 @@ pixi run --locked setup-search     # download the search engine into .local/sear
 pixi run --locked smoke-host       # end to end on the real OpenCode CLI with a scripted model
 pixi run --locked smoke-snapshot   # the same, from an installed snapshot
 pixi run --locked install-dev      # point your OpenCode config at this checkout
+pixi run desktop-dev start         # macOS: the installed Desktop app with an isolated profile loading this checkout
 ```
 
 Layout: `plugin/index.ts` (server plugin), `plugin/gui.tsx` (Pause pill, commands, Settings page, terminal relay),

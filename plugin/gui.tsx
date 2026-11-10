@@ -50,7 +50,8 @@ function SettingsView(props: { ctx: Context; client: () => Client }) {
   const toggle = (key: "notes" | "documents" | "search" | "terminals" | "pixi") => (value: boolean) => void act(() => api().update({ [key]: value }))
   onMount(() => {
     void refresh()
-    const timer = setInterval(() => { if (document.visibilityState === "visible" && (state()?.search.installing || !state())) void refresh() }, 1500)
+    // While a download runs, keep the progress current even if the window is in the background.
+    const timer = setInterval(() => { if (state()?.search.installing || !state()) void refresh() }, 1500)
     onCleanup(() => clearInterval(timer))
   })
   const feature = (key: "notes" | "documents" | "search" | "terminals" | "pixi", title: string, text: string, extra?: () => JSX.Element) => (
@@ -74,7 +75,7 @@ function SettingsView(props: { ctx: Context; client: () => Client }) {
               <Show when={current().search.installing} fallback={
                 <div style={{ display: "flex", gap: "8px", "align-items": "center", "flex-wrap": "wrap" }}>
                   <span style={muted}>{current().search.installed ? `Meaning-based search: installed (${megabytes(current().search.engineBytes)}).` : "Meaning-based search: not installed (download about 290 MB once: ColGrep by LightOn, ONNX Runtime by Microsoft, LateOn-Code-edge model)."}</span>
-                  <Show when={!current().search.installed}><ctx.ui.Button size="small" variant="contrast" icon="download" onClick={() => void act(() => api().installSearch({}))}>Download</ctx.ui.Button></Show>
+                  <Show when={!current().search.installed}><ctx.ui.Button size="small" variant="contrast" icon="download" onClick={() => void act(async () => { const next = await api().installSearch({}); return next })}>Download</ctx.ui.Button></Show>
                   <Show when={current().search.installed}><ctx.ui.Button size="small" variant="ghost" onClick={() => void act(() => api().removeSearch({}), "Search engine removed")}>Remove</ctx.ui.Button></Show>
                 </div>
               }>{installing => <span style={muted}>{installing().step} ({installing().done + 1}/{installing().total})…</span>}</Show>
