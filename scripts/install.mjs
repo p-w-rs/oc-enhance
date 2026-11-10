@@ -1,179 +1,275 @@
-import { createHash } from "node:crypto"
-import { execFileSync } from "node:child_process"
-import { mkdir, readFile, writeFile, copyFile, chmod, rename, unlink, readdir } from "node:fs/promises"
-import { homedir, release } from "node:os"
-import path from "node:path"
-import { fileURLToPath } from "node:url"
-import { parse, modify, applyEdits } from "jsonc-parser"
+// Adds this plugin to the global OpenCode config (comment-preserving, with a backup).
+//   (default)    build a verified immutable snapshot under $XDG_DATA_HOME/oc-enhance/releases and activate it
+//   --dev        point OpenCode at this checkout instead
+//   --rollback   switch back to the previously active snapshot (verified first)
+//   --uninstall  remove only this plugin's entry; settings, indexes and snapshots are kept
+//   --status     show what is installed and whether the active snapshot is intact (changes nothing)
+// Plugin options already in the config entry are always kept.
+import { spawnSync } from "node:child_process"
+import { createHash, randomUUID } from "node:crypto"
+import { chmod, copyFile, mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises"
+import { homedir } from "node:os"
+import { dirname, isAbsolute, join, resolve } from "node:path"
+import { fileURLToPath, pathToFileURL } from "node:url"
+import { applyEdits, modify, parse } from "jsonc-parser"
 
-const digest = data => createHash("sha256").update(data).digest("hex")
-const root = path.resolve(fileURLToPath(new URL("../", import.meta.url)))
+const NAME = "oc-enhance"
+const MANIFEST = ".oc-release.json"
+const KEEP = 3
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
-export function findHost(candidates, run = execFileSync) {
-  for (const command of candidates) {
-    let version
-    try { version = run(command, ["--version"], { encoding: "utf8", timeout: 15_000 }).trim() } catch { continue }
-    const match = /^(?:opencode\s+)?v?(\d+)\.(\d+)\.(\d+)(?:\s|$|[-+])/.exec(version)
-    if (match && +match[1] === 2 && (+match[2] > 2 || (+match[2] === 2 && +match[3] >= 6))) return { command, version }
-  }
-  throw new Error("Requires OpenCode V2 >=2.2.6 (tested with 2.2.6). Install Desktop or put a compatible CLI on PATH; no configuration changed.")
+export const releasesDir = () => join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), NAME, "releases")
+const configDir = () => join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "opencode")
+const statePath = () => join(releasesDir(), "installation.json")
+const sha256 = data => createHash("sha256").update(data).digest("hex")
+
+const run = (cmd, argv, cwd) => {
+  const result = spawnSync(cmd, argv, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
+  if (result.error || result.status !== 0) throw result.error || new Error(`${cmd} ${argv[0]} failed (${result.status}): ${result.stderr.trim().slice(-2000)}`)
+  return result.stdout
 }
 
-export function configure(source, target, releases, options = {}, sourceRoot = root) {
-  const errors = []
-  const config = parse(source, errors, { allowTrailingComma: true })
-  if (errors.length || !config || typeof config !== "object" || Array.isArray(config)) throw new Error("Invalid OpenCode configuration; refusing to overwrite")
-  if (config.plugins !== undefined && !Array.isArray(config.plugins)) throw new Error("Expected a V2 plugins array")
-  const plugins = config.plugins ?? []
-  const owned = value => {
-    const name = typeof value === "string" ? value : value?.package
-    return typeof name === "string" && (name === sourceRoot || name.startsWith(`${releases}${path.sep}`))
+async function walk(base, directory = "") {
+  const result = []
+  for (const entry of (await readdir(join(base, directory), { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+    const path = join(directory, entry.name)
+    if (entry.isDirectory()) result.push(...await walk(base, path))
+    else if (entry.isFile() && path !== MANIFEST) result.push(path)
   }
-  const previous = plugins.find(owned)
-  const existingOptions = typeof previous === "object" ? previous.options ?? {} : {}
-  if (!existingOptions || typeof existingOptions !== "object" || Array.isArray(existingOptions)) throw new Error("Invalid existing plugin options")
-  const entry = { ...(typeof previous === "object" ? previous : {}), package: target, options: { ...existingOptions, ...options } }
-  delete entry.options.pixiGuard // Removed globally; stale opt-ins must not resurrect it.
-  const indices = plugins.flatMap((value, index) => owned(value) ? [index] : [])
-  // Patch array entries rather than serializing the document: preserve JSONC comments.
-  const format = { formattingOptions: { insertSpaces: true, tabSize: 2 } }
-  if (target && indices.length === 1 && JSON.stringify(plugins[indices[0]]) === JSON.stringify(entry)) return source
-  if (!target && !indices.length) return source
+  return result
+}
+
+/** Checks every file of a snapshot against its manifest. Throws if anything was added, removed or changed. */
+export async function verifyRelease(target) {
+  let manifest
+  try { manifest = JSON.parse(await readFile(join(target, MANIFEST), "utf8")) }
+  catch (error) { throw new Error(`${target} is not a complete ${NAME} snapshot (${error.code ?? error.message})`) }
+  if (manifest.name !== NAME || !manifest.files || !manifest.files["plugin/index.ts"] || !manifest.files["dist/gui-experimental.cjs"]) {
+    throw new Error(`${target}: snapshot manifest is incomplete`)
+  }
+  const actual = await walk(target)
+  const expected = Object.keys(manifest.files)
+  const extra = actual.filter(file => !(file in manifest.files))
+  const missing = expected.filter(file => !actual.includes(file))
+  if (extra.length || missing.length) throw new Error(`${target} was modified (${[...missing.map(f => `missing ${f}`), ...extra.map(f => `added ${f}`)].slice(0, 5).join(", ")})`)
+  for (const file of expected) {
+    if (isAbsolute(file) || file.split(/[\\/]/).includes("..")) throw new Error("Invalid path in snapshot manifest")
+    if (sha256(await readFile(join(target, file))) !== manifest.files[file]) throw new Error(`${target} was modified (${file})`)
+  }
+  return manifest
+}
+
+/** Packs this checkout, installs its locked runtime dependencies, checks they load, and records every file's hash. */
+export async function deploy() {
+  try { await stat(join(root, "dist", "gui-experimental.cjs")) }
+  catch { throw new Error("The GUI bundle is not built (dist/gui-experimental.cjs). Run: pixi run --locked build") }
+  const scratch = join(root, ".local", "pack")
+  await mkdir(scratch, { recursive: true })
+  for (const old of await readdir(scratch)) if (old.endsWith(".tgz")) await unlink(join(scratch, old))
+  const [info] = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", scratch, "--cache", join(root, ".local", "npm-cache")], root))
+  const tarball = join(scratch, info.filename)
+  const fingerprint = sha256(Buffer.concat([await readFile(tarball), Buffer.from(`${process.platform}-${process.arch}`)]))
+  const directory = releasesDir()
+  const target = join(directory, `${info.version}-${fingerprint.slice(0, 12)}`)
+  await mkdir(directory, { recursive: true, mode: 0o700 })
+  try {
+    const existing = await verifyRelease(target)
+    if (existing.fingerprint === fingerprint) return target
+    throw new Error(`${target} exists with different contents; remove it after checking it is not in use`)
+  } catch (error) { if (!/is not a complete/.test(error.message)) throw error }
+  try { await stat(target); throw new Error(`${target} exists but is incomplete. If no install is running, remove it and retry.`) }
+  catch (error) { if (error.code !== "ENOENT") throw error }
+
+  const staging = join(directory, `.staging-${randomUUID()}`)
+  await mkdir(staging, { mode: 0o700 })
+  try {
+    run("tar", ["-xzf", tarball, "-C", staging, "--strip-components=1"], root)
+    run("npm", ["ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--cache", join(root, ".local", "npm-cache")], staging)
+    // Runtime dependencies must resolve from the snapshot itself.
+    const check = spawnSync(process.execPath, ["--input-type=module", "-e",
+      "const a = await import('fflate'); const b = await import('ignore'); const c = await import('unpdf'); const j = await import('jsonc-parser'); if (!a.unzipSync || !b.default || !c.extractText || !j.parse) process.exit(3); console.log('ok')"],
+      { cwd: staging, encoding: "utf8" })
+    if (check.status !== 0) throw new Error(`Snapshot dependencies do not load: ${check.stderr.trim().slice(-1000)}`)
+    const files = {}
+    for (const file of await walk(staging)) files[file] = sha256(await readFile(join(staging, file)))
+    const manifest = { name: NAME, version: info.version, fingerprint, platform: `${process.platform}-${process.arch}`, created: new Date().toISOString(), files }
+    await writeFile(join(staging, MANIFEST), JSON.stringify(manifest, null, 2) + "\n", { mode: 0o600 })
+    await rename(staging, target)
+    return target
+  } catch (error) {
+    await rm(staging, { recursive: true, force: true })
+    throw error
+  }
+}
+
+async function readState() {
+  try { return JSON.parse(await readFile(statePath(), "utf8")) }
+  catch (error) { if (error.code === "ENOENT") return {}; throw error }
+}
+async function writeState(state) {
+  await mkdir(releasesDir(), { recursive: true, mode: 0o700 })
+  const temporary = `${statePath()}.${process.pid}.tmp`
+  await writeFile(temporary, JSON.stringify(state, null, 2) + "\n", { mode: 0o600 })
+  await rename(temporary, statePath())
+}
+
+/** Removes old snapshots, keeping the newest few plus the current and previous ones. Never touches anything else. */
+async function prune(state) {
+  const keep = new Set([state.current, state.previous].filter(Boolean))
+  const snapshots = []
+  for (const entry of await readdir(releasesDir(), { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue
+    const path = join(releasesDir(), entry.name)
+    try { snapshots.push({ path, created: Date.parse(JSON.parse(await readFile(join(path, MANIFEST), "utf8")).created) }) } catch {}
+  }
+  snapshots.sort((a, b) => b.created - a.created)
+  const removed = []
+  for (const [index, snapshot] of snapshots.entries()) {
+    if (index < KEEP || keep.has(snapshot.path)) continue
+    await rm(snapshot.path, { recursive: true, force: true })
+    removed.push(snapshot.path)
+  }
+  return removed
+}
+
+/** Drops agent permission rules for the old open-enhance tools (open_enhance_*); empty containers go too. */
+export function removeLegacyPermissions(source, format = { formattingOptions: { insertSpaces: true, tabSize: 2 } }) {
+  const config = parse(source, [], { allowTrailingComma: true })
   let updated = source
-  let expected
-  if (!Array.isArray(config.plugins)) expected = [entry]
-  else if (!indices.length) expected = [...plugins, entry]
-  else expected = plugins.flatMap((value, index) => !indices.includes(index) ? [value] : target && index === indices[0] ? [entry] : [])
-  if (target && Array.isArray(config.plugins) && indices.length === 1) updated = applyEdits(updated, modify(updated, ["plugins", indices[0]], entry, format))
-  else if (target && Array.isArray(config.plugins) && !indices.length) updated = applyEdits(updated, modify(updated, ["plugins", plugins.length], entry, format))
-  // jsonc-parser 3.3.1 corrupts single-line arrays when removing an element, so removals rewrite the whole
-  // plugins array (comments inside that array are lost; the rest of the document is kept).
-  else updated = applyEdits(updated, modify(updated, ["plugins"], expected, format))
-  const updatedErrors = []
-  const reparsed = parse(updated, updatedErrors, { allowTrailingComma: true })
-  if (updatedErrors.length || JSON.stringify(reparsed?.plugins) !== JSON.stringify(expected)) throw new Error("Configuration edit failed validation; no configuration changed")
+  for (const [agent, settings] of Object.entries(config?.agents ?? {})) {
+    const rules = settings?.permissions
+    if (!Array.isArray(rules) || !rules.some(rule => typeof rule?.action === "string" && rule.action.startsWith("open_enhance_"))) continue
+    const kept = rules.filter(rule => !(typeof rule?.action === "string" && rule.action.startsWith("open_enhance_")))
+    if (kept.length) updated = applyEdits(updated, modify(updated, ["agents", agent, "permissions"], kept, format))
+    else if (Object.keys(settings).length > 1) updated = applyEdits(updated, modify(updated, ["agents", agent, "permissions"], undefined, format))
+    else updated = applyEdits(updated, modify(updated, ["agents", agent], undefined, format))
+  }
+  const after = parse(updated, [], { allowTrailingComma: true })
+  if (updated !== source && after?.agents && typeof after.agents === "object" && !Object.keys(after.agents).length) updated = applyEdits(updated, modify(updated, ["agents"], undefined, format))
   return updated
 }
 
-export async function verifySnapshot(directory) {
-  const receipt = JSON.parse(await readFile(path.join(directory, ".open-enhance-release.json"), "utf8"))
-  if (!receipt.files?.["plugin/index.ts"] || !receipt.files?.["dist/gui-experimental.cjs"]) throw new Error("Incomplete snapshot integrity manifest")
-  for (const [name, expected] of Object.entries(receipt.files)) {
-    if (path.isAbsolute(name) || name.split(/[\\/]/).includes("..")) throw new Error("Invalid snapshot member")
-    if (digest(await readFile(path.join(directory, name))) !== expected) throw new Error(`Snapshot changed: ${name}`)
+/** Points the config's entry for this plugin at `target` (or removes it). Keeps options, comments and other plugins. */
+async function updateConfig(target) {
+  const directory = configDir()
+  await mkdir(directory, { recursive: true })
+  let path = join(directory, "opencode.jsonc")
+  let source
+  for (const name of ["opencode.jsonc", "opencode.json"]) {
+    try { source = await readFile(join(directory, name), "utf8"); path = join(directory, name); break }
+    catch (error) { if (error.code !== "ENOENT") throw error }
   }
-  return receipt
+  const existed = source !== undefined
+  source ??= '{\n  "$schema": "https://opencode.ai/config.json"\n}\n'
+  const errors = []
+  const config = parse(source, errors, { allowTrailingComma: true })
+  if (errors.length || !config || typeof config !== "object" || Array.isArray(config)) throw new Error(`Invalid config: ${path}`)
+  const plugins = config.plugins ?? []
+  if (!Array.isArray(plugins)) throw new Error(`Expected a V2 plugins array in ${path}; refusing to rewrite it.`)
+  const entryPath = entry => typeof entry === "string" ? entry : entry?.package
+  // Earlier versions were called open-enhance (data in .../open-enhance/releases); they are replaced, not kept beside.
+  const legacy = p => /[\\/]open-enhance[\\/]releases[\\/]/.test(p) || /[\\/]open-enhance[\\/]?$/.test(p)
+  const owned = plugins.flatMap((entry, index) => {
+    const p = entryPath(entry)
+    return typeof p === "string" && (p === root || p.startsWith(`${releasesDir()}/`) || legacy(p)) ? [index] : []
+  })
+  const done = (target === undefined ? owned.length === 0 : owned.length === 1 && entryPath(plugins[owned[0]]) === target) && removeLegacyPermissions(source) === source
+  if (!done) {
+    const format = { formattingOptions: { insertSpaces: true, tabSize: 2 } }
+    let updated = source
+    if (target === undefined && !owned.length) { /* only legacy permission rules to remove */ }
+    else if (!Array.isArray(config.plugins)) updated = applyEdits(updated, modify(updated, ["plugins"], [target], format))
+    else if (owned.length === 1 && target !== undefined) {
+      const first = owned[0]
+      // A legacy entry's options (checkpoints, evidence, pixiExecutable, ...) do not apply to oc-enhance.
+      updated = applyEdits(updated, modify(updated, ["plugins", first], legacy(entryPath(plugins[first])) ? target : typeof plugins[first] === "string" ? target : { ...plugins[first], package: target }, format))
+    } else if (!owned.length) updated = applyEdits(updated, modify(updated, ["plugins", plugins.length], target, format))
+    else {
+      // jsonc-parser 3.3.1 corrupts single-line arrays when removing an object element, so removals rewrite the
+      // whole array (comments inside the plugins array are lost; everything else is kept).
+      const next = plugins.flatMap((entry, index) => {
+        if (!owned.includes(index)) return [entry]
+        if (target === undefined || index !== owned[0]) return []
+        return [typeof entry === "string" || legacy(entryPath(entry)) ? target : { ...entry, package: target }]
+      })
+      updated = applyEdits(updated, modify(updated, ["plugins"], next, format))
+    }
+    updated = removeLegacyPermissions(updated, format)
+    const check = []
+    const reparsed = parse(updated, check, { allowTrailingComma: true })
+    if (check.length || JSON.stringify((reparsed.plugins ?? []).map(entryPath)) !== JSON.stringify(
+      target === undefined ? plugins.filter((_, i) => !owned.includes(i)).map(entryPath)
+        : owned.length ? plugins.flatMap((entry, i) => !owned.includes(i) ? [entryPath(entry)] : i === owned[0] ? [target] : [])
+        : [...plugins.map(entryPath), target])) {
+      throw new Error(`Refusing to write ${path}: the edited config did not come out as expected. Nothing was changed.`)
+    }
+    if (existed) {
+      if (await readFile(path, "utf8") !== source) throw new Error("OpenCode configuration changed during installation; retry.")
+      const backup = `${path}.${NAME}-${Date.now()}.bak`
+      await copyFile(path, backup)
+      await chmod(backup, 0o600)
+    }
+    const temporary = `${path}.${NAME}-${process.pid}.tmp`
+    await writeFile(temporary, updated, { mode: 0o600, flag: "wx" })
+    await rename(temporary, path)
+  }
+  const active = owned.length ? entryPath(plugins[owned[0]]) : undefined
+  return { path, changed: !done, active }
 }
 
-async function snapshot(releases, pixi, dataDirectory) {
-  const destination = path.join(root, ".local/release")
-  await mkdir(destination, { recursive: true, mode: 0o700 })
-  const packed = JSON.parse(execFileSync("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", destination, "--cache", ".local/npm-cache"], { cwd: root, encoding: "utf8" }))[0]
-  const archive = path.join(destination, packed.filename)
-  const archiveSha256 = digest(await readFile(archive))
-  const directory = path.join(releases, `${packed.version}-${archiveSha256.slice(0, 16)}`)
-  await mkdir(releases, { recursive: true, mode: 0o700 })
-  try { await mkdir(directory, { mode: 0o700 }) }
+async function main(args) {
+  const allowed = ["--dev", "--rollback", "--uninstall", "--status"]
+  if (args.length > 1 || args.some(arg => !allowed.includes(arg))) throw new Error(`Usage: install.mjs [${allowed.join(" | ")}]`)
+  const [mode = "install"] = args.map(arg => arg.slice(2))
+  if (!["darwin", "linux"].includes(process.platform)) throw new Error(`${NAME} supports macOS and Linux only`)
+
+  if (mode === "status") {
+    const state = await readState()
+    console.log(`Releases: ${releasesDir()}`)
+    console.log(`Current:  ${state.current ?? "(none)"}${state.dev ? " (development link)" : ""}`)
+    console.log(`Previous: ${state.previous ?? "(none)"}`)
+    if (state.current && !state.dev) {
+      try { const manifest = await verifyRelease(state.current); console.log(`Verified: ${Object.keys(manifest.files).length} files intact (version ${manifest.version})`) }
+      catch (error) { console.log(`PROBLEM:  ${error.message}`); process.exitCode = 1 }
+    }
+    return
+  }
+
+  await mkdir(configDir(), { recursive: true })
+  const guard = join(configDir(), `.${NAME}-install.lock`)
+  try { await writeFile(guard, String(process.pid), { flag: "wx", mode: 0o600 }) }
   catch (error) {
-    if (error.code !== "EEXIST") throw error
-    const receipt = await verifySnapshot(directory)
-    if (receipt.archiveSha256 !== archiveSha256) throw new Error("Snapshot archive fingerprint mismatch")
-    return directory
+    if (error.code === "EEXIST") throw new Error(`Another ${NAME} install holds ${guard}. If a prior run crashed, confirm it stopped before removing the lock.`)
+    throw error
   }
-  // Never relocate a prepared Pixi prefix or overwrite an existing snapshot.
-  execFileSync("/usr/bin/tar", ["-xzf", archive, "--strip-components=1", "-C", directory])
-  for (const task of ["setup", "doctor"]) execFileSync(pixi, ["run", "--locked", "--manifest-path", path.join(directory, "pixi.toml"), task], { cwd: directory, stdio: "inherit", timeout: 600_000, env: { ...process.env, ...(dataDirectory ? { OPEN_ENHANCE_HOME: dataDirectory } : {}) } })
-  const files = {}
-  for (const { path: name } of packed.files) files[name] = digest(await readFile(path.join(directory, name)))
-  await writeFile(path.join(directory, ".open-enhance-release.json"), JSON.stringify({ archiveSha256, files }, null, 2) + "\n", { mode: 0o600 })
-  await verifySnapshot(directory)
-  return directory
-}
-
-export function featureOptions(args) {
-  const options = {}
-  for (const feature of ["checkpoints", "evidence", "terminals"]) {
-    if (args.includes(`--${feature}`) && args.includes(`--no-${feature}`)) throw new Error(`Choose enable or disable for ${feature}, not both`)
-    if (args.includes(`--${feature}`)) options[feature] = true
-    if (args.includes(`--no-${feature}`)) options[feature] = false
-  }
-  return options
-}
-
-export async function install(args = process.argv.slice(2)) {
-  const allowed = new Set(["--checkpoints", "--no-checkpoints", "--evidence", "--no-evidence", "--terminals", "--no-terminals", "--uninstall", "--rollback"])
-  if (args.some(value => !allowed.has(value))) throw new Error("Usage: pixi run --locked install --[no-]checkpoints --[no-]evidence --[no-]terminals | --rollback | --uninstall. The --pixi-guard feature has been removed.")
-  const features = featureOptions(args)
-  const uninstall = args.includes("--uninstall"), rollback = args.includes("--rollback")
-  if ((uninstall || rollback) && args.length !== 1) throw new Error("Choose one installation operation")
-  if (!args.length) throw new Error("Choose features explicitly: --[no-]checkpoints, --[no-]evidence and/or --[no-]terminals")
-  const configDirectory = path.join(process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"), "opencode")
-  const releases = path.join(process.env.XDG_DATA_HOME || path.join(homedir(), ".local/share"), "open-enhance/releases")
-  await mkdir(configDirectory, { recursive: true, mode: 0o700 })
-  const lock = path.join(configDirectory, ".open-enhance-install.lock")
-  await writeFile(lock, String(process.pid), { flag: "wx", mode: 0o600 })
   try {
-    let file = path.join(configDirectory, "opencode.jsonc"), source
-    for (const name of ["opencode.jsonc", "opencode.json"]) {
-      try { source = await readFile(path.join(configDirectory, name), "utf8"); file = path.join(configDirectory, name); break }
-      catch (error) { if (error.code !== "ENOENT") throw error }
+    const state = await readState()
+    if (mode === "uninstall") {
+      const result = await updateConfig(undefined)
+      await writeState({ ...state, current: undefined, dev: undefined, previous: state.current ?? state.previous })
+      console.log(`${NAME} ${result.changed ? "removed from" : "already absent from"} ${result.path}. Settings, notes, indexes and snapshots were kept; reinstall or --rollback to return.`)
+      return
     }
-    const existed = source !== undefined
-    source ??= '{\n  "$schema": "https://opencode.ai/config.json"\n}\n'
-    configure(source, undefined, releases) // Fail before provisioning for malformed config.
-    const stateFile = path.join(releases, "installation.json")
-    let state = {}
-    try { state = JSON.parse(await readFile(stateFile, "utf8")) } catch (error) { if (error.code !== "ENOENT") throw error }
-    let target, options = {}
-    if (!uninstall) {
-      if (process.platform !== "darwin" || process.arch !== "arm64" || Number(release().split(".")[0]) < 24) throw new Error("Requires macOS 15+ on Apple Silicon")
-      const desktop = path.join(homedir(), "Library/Application Support/ai.opencode.desktop/cli")
-      let bundled = []
-      try { bundled = (await readdir(desktop)).sort().reverse().map(name => path.join(desktop, name, "opencode-cli")) } catch (error) { if (error.code !== "ENOENT") throw error }
-      const host = findHost([...bundled, "opencode"])
-      console.log(`Compatible OpenCode: ${host.version}`)
-      const pixi = execFileSync("/usr/bin/which", ["pixi"], { encoding: "utf8" }).trim()
-      if (!path.isAbsolute(pixi)) throw new Error("Cannot locate Pixi")
-      if (rollback) {
-        if (!state.previous || path.dirname(state.previous) !== releases) throw new Error("No previous managed snapshot available")
-        target = state.previous
-        await verifySnapshot(target)
-      } else {
-        const previous = (parse(source).plugins ?? []).find(value => {
-          const name = typeof value === "string" ? value : value?.package
-          return name === root || (typeof name === "string" && name.startsWith(`${releases}${path.sep}`))
-        })
-        const dataDirectory = process.env.OPEN_ENHANCE_HOME || previous?.options?.dataDirectory
-        if (dataDirectory !== undefined && (typeof dataDirectory !== "string" || !path.isAbsolute(dataDirectory))) throw new Error("Evidence data directory must be absolute")
-        target = await snapshot(releases, pixi, dataDirectory)
-        options = {
-          ...features,
-          pixiExecutable: pixi,
-          ...(dataDirectory ? { dataDirectory } : {}),
-        }
-      }
-    }
-    const updated = configure(source, target, releases, options)
-    if (updated !== source) {
-      if (existed) {
-        if (await readFile(file, "utf8") !== source) throw new Error("Configuration changed during install; retry")
-        const backup = `${file}.open-enhance-${Date.now()}-${process.pid}.bak`
-        await copyFile(file, backup); await chmod(backup, 0o600)
-      } else {
-        try { await readFile(file); throw new Error("Configuration appeared during install; retry") } catch (error) { if (error.code !== "ENOENT") throw error }
-      }
-      const temporary = `${file}.open-enhance-${process.pid}.tmp`
-      await writeFile(temporary, updated, { flag: "wx", mode: 0o600 })
-      await rename(temporary, file)
-    }
-    if (target && state.current !== target) {
-      const temporary = `${stateFile}.${process.pid}.tmp`
-      await writeFile(temporary, JSON.stringify({ current: target, previous: state.current }, null, 2) + "\n", { mode: 0o600 })
-      await rename(temporary, stateFile)
-    }
-    console.log(uninstall ? "Removed open-enhance config entry; snapshots, checkpoints and evidence data retained." : `Installed open-enhance: ${target}`)
-    console.log("Unrelated settings preserved. OpenCode watches configuration; use /reload if needed.")
-  } finally { await unlink(lock) }
+    let target
+    if (mode === "dev") target = root
+    else if (mode === "rollback") {
+      if (!state.previous) throw new Error("No previous snapshot to roll back to")
+      if (state.previous !== root) await verifyRelease(state.previous)
+      target = state.previous
+    } else target = await deploy()
+    if (target !== root) await verifyRelease(target)
+    const result = await updateConfig(target)
+    const next = { current: target, dev: target === root || undefined, previous: state.current && state.current !== target ? state.current : state.previous }
+    await writeState(next)
+    const removed = await prune(next)
+    console.log(`${NAME} ${result.changed ? (mode === "rollback" ? "rolled back" : "installed") : "already active"} in ${result.path}`)
+    console.log(`Plugin:   ${target}${target === root ? " (development link)" : " (verified snapshot)"}`)
+    if (next.previous) console.log(`Previous: ${next.previous} (pixi run rollback)`)
+    if (removed.length) console.log(`Removed ${removed.length} old snapshot(s).`)
+    console.log("OpenCode picks up config changes automatically; use /reload if needed.")
+  } finally { await unlink(guard) }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await install()
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main(process.argv.slice(2)).catch(error => { console.error(`${NAME}: ${error.message}`); process.exit(1) })
+}

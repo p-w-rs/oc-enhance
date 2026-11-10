@@ -1,14 +1,13 @@
-import { Rpc } from "@opencode/plugin/rpc"
-import { Schema } from "effect"
+import type { Rpc } from "@opencode/plugin/rpc"
 
-const output = Schema.toStandardSchemaV1(Schema.Unknown)
+const output = {} as const
 
 /**
  * Relay between the server plugin (which has the agent's tools) and Desktop windows (which can reach terminals):
  * the server emits `request`; a window `claim`s it (only the first succeeds), runs it, and `respond`s.
  */
-export const Terminals = Rpc.define({
-  id: "open-enhance.terminals",
+export const Terminals = {
+  id: "oc-enhance.terminals",
   methods: {
     claim: { input: { type: "object", properties: { id: { type: "string", minLength: 1, maxLength: 100 } }, required: ["id"], additionalProperties: false }, output },
     respond: {
@@ -23,4 +22,4 @@ export const Terminals = Rpc.define({
   events: {
     request: { schema: { type: "object", properties: { id: { type: "string" }, operation: { type: "object" } }, required: ["id", "operation"] } },
   },
-})
+} as const satisfies Rpc.PortableDefinition

@@ -1,48 +1,27 @@
 [workspace]
-name = "open-enhance"
-version = "0.2.0"
-description = "Measured, optional evidence enhancements for OpenCode"
+name = "oc-enhance"
+version = "1.0.0"
+description = "Small enhancements to OpenCode: task notes, Pause/Resume, documents, project search, shared terminals"
 channels = ["conda-forge"]
-platforms = [{ platform = "osx-arm64", macos = "15.0" }]
+platforms = ["osx-arm64", "osx-64", "linux-64", "linux-aarch64"]
 
 [dependencies]
-python = "3.12.*"
-nodejs = "26.*"
-ripgrep = "14.*"
-
-[pypi-dependencies]
-open-enhance = { path = ".", editable = true }
-pytest = "==9.0.3"
-pypdf = "==6.21.4"
-huggingface-hub = "==1.1.2"
-onnxruntime = "==1.23.2"
-
-[feature.decisions.pypi-dependencies]
-mlx-decision = "==1.2.0"
-
-[feature.audit.pypi-dependencies]
-pip-audit = "==2.10.1"
-
-[environments]
-decisions = { features = ["decisions"] }
-audit = { features = ["audit"] }
+nodejs = "24.*"
+# Unpacks the search engine download (.tar.xz) on systems whose tar has no xz support.
+xz = "5.*"
 
 [tasks]
-js-install = "npm ci --ignore-scripts --cache .local/npm-cache"
-js-lock = "npm install --package-lock-only --ignore-scripts --cache .local/npm-cache"
-install = { cmd = "node scripts/install.mjs", depends-on = ["build"] }
-setup = { cmd = "python -m open_enhance.setup", depends-on = ["js-install"] }
-check = { cmd = "npm run check", depends-on = ["js-install"] }
-build = { cmd = "npm run build", depends-on = ["js-install"] }
-package-check = { cmd = "npm run pack:check", depends-on = ["build"] }
-package-acceptance = { cmd = "node scripts/package-acceptance.mjs", depends-on = ["package-check"] }
-cli-acceptance = "node scripts/cli-acceptance.mjs"
-release-dir = "node -e \"require('node:fs').mkdirSync('.local/release',{recursive:true,mode:448})\""
-python-audit = { cmd = "pip-audit --path .pixi/envs/default/lib/python3.12/site-packages --format json --output .local/release/python-audit.json", default-environment = "audit", depends-on = ["release-dir"] }
-release-check = { cmd = "npm run release:check", depends-on = ["js-install"] }
-test = { cmd = "python -m pytest -q && npm test", depends-on = ["check"] }
-evaluate = "python -m open_enhance.evaluate"
-search = "python -m open_enhance.cli search"
-doctor = "python -m open_enhance.cli doctor"
-worker = "python -m open_enhance.cli rpc"
-decision-evaluate = { cmd = "python -m open_enhance.decisions", default-environment = "decisions" }
+deps = "node scripts/deps.mjs"
+deps-update = "node scripts/deps.mjs --refresh --shrinkwrap"
+check = { cmd = "npm run check", depends-on = ["deps"] }
+build = { cmd = "npm run build", depends-on = ["deps"] }
+test = { cmd = "npm test", depends-on = ["check", "build"] }
+doctor = { cmd = "node --import tsx scripts/doctor.mjs", depends-on = ["build"] }
+setup-search = { cmd = "node --import tsx scripts/setup-search.mjs", depends-on = ["deps"] }
+install = { cmd = "node scripts/install.mjs", depends-on = ["build", "test"] }
+install-dev = { cmd = "node scripts/install.mjs --dev", depends-on = ["build"] }
+uninstall = { cmd = "node scripts/install.mjs --uninstall", depends-on = ["deps"] }
+rollback = { cmd = "node scripts/install.mjs --rollback", depends-on = ["deps"] }
+install-status = { cmd = "node scripts/install.mjs --status", depends-on = ["deps"] }
+smoke-host = { cmd = "node --import tsx scripts/smoke-host.mjs", depends-on = ["build"] }
+smoke-snapshot = { cmd = "node --import tsx scripts/smoke-host.mjs --snapshot", depends-on = ["build"] }

@@ -7,9 +7,9 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Plugin } from "@opencode/plugin"
 import { ClientBackend, encodeInput, NO_DESKTOP, perform, RelayBackend, settle, tail, type PtyApi } from "./terminal.js"
-import { installTerminals, terminalOptions } from "./terminal-tools.js"
+import { installTerminals } from "./terminal-tools.js"
 
-const binary = fileURLToPath(new URL("../node_modules/@opencode/cli-darwin-arm64/bin/opencode", import.meta.url))
+const binary = fileURLToPath(new URL(`../.local/host/node_modules/@opencode/cli-${process.platform}-${process.arch}/bin/opencode`, import.meta.url))
 const PASSWORD = "terminal-test-password"
 let home: string, server: ChildProcess, url: string, sessionID: string
 const auth = { authorization: `Basic ${Buffer.from(`opencode:${PASSWORD}`).toString("base64")}` }
@@ -67,8 +67,6 @@ test("input encoding and screen tails", () => {
   assert.equal(encodeInput(undefined, ["ctrl-c", "up"], true), "\x03\x1b[A\r")
   assert.throws(() => encodeInput("x", ["hyperdrive"], false), /Unknown key/)
   assert.equal(tail("a\nb\nc\n\n\n", 2), "b\nc")
-  assert.deepEqual(terminalOptions({}), { write: "allow" })
-  assert.throws(() => terminalOptions({ terminalWrite: "maybe" }), /terminalWrite/)
 })
 
 test("the relay: one window claims and runs each request; no window means a clear error", async () => {
@@ -116,7 +114,8 @@ test("tools: list, read, write to the session's terminals, open a new one", asyn
     permission: { assert: async (input: unknown) => { asked.push(input) } },
     tool: { transform: async (callback: (editor: unknown) => void) => { callback({ add: (tool: { name: string }) => tools.set(tool.name, tool) }); return { dispose: async () => {} } } },
   }
-  await installTerminals(ctx as unknown as Plugin.Context, bridge)
+  let enabled = true
+  await installTerminals(ctx as unknown as Plugin.Context, { enabled: () => enabled, write: () => "allow" }, bridge)
   assert.deepEqual([...tools.keys()].sort(), ["terminal_list", "terminal_open", "terminal_read", "terminal_write"])
   const context = { sessionID, agent: "build", messageID: "m", id: "c", signal: new AbortController().signal }
   const run = async (name: string, input: unknown) => JSON.parse((await tools.get(name).execute(input, context)).content)
@@ -129,4 +128,5 @@ test("tools: list, read, write to the session's terminals, open a new one", asyn
   assert.match(read.screen, /TOOL_ok/)
   assert.deepEqual(asked, [], "writing is allowed by default")
   await assert.rejects(run("terminal_read", { id: "nope" }), /No terminal "nope"/)
+  void enabled
 })

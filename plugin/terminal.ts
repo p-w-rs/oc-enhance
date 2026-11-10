@@ -95,7 +95,7 @@ export class ClientBackend implements TerminalBackend {
     const url = new URL(`api/experimental/persistent-pty/${encodeURIComponent(id)}/connect`, base)
     url.searchParams.set("ticket", token.ticket)
     url.searchParams.set("cursor", String(info.output?.tail ?? 0)) // no replay of old output
-    url.searchParams.set("attachment_id", `open-enhance-agent-${Date.now().toString(36)}`)
+    url.searchParams.set("attachment_id", `oc-enhance-agent-${Date.now().toString(36)}`)
     url.searchParams.set("takeover", "true")
     url.searchParams.set("input_protocol", "1")
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
@@ -157,7 +157,7 @@ export function perform(backend: TerminalBackend, operation: Operation): Promise
   }
 }
 
-export const NO_DESKTOP = "Shared terminals are run by the OpenCode Desktop app, and no Desktop window answered. Ask the user to open the app (with open-enhance terminals enabled), then retry."
+export const NO_DESKTOP = "Shared terminals are run by the OpenCode Desktop app, and no Desktop window answered. Ask the user to open the app (with oc-enhance shared terminals turned on in Settings → Enhance), then retry."
 
 /** Server side: relays operations to a Desktop window and waits for its answer. */
 export class RelayBackend implements TerminalBackend {
@@ -202,5 +202,5 @@ export class RelayBackend implements TerminalBackend {
   create(sessionID: string, input: CreateInput) { return this.#run<TerminalInfo>({ op: "create", sessionID, input }) }
   async write(id: string, data: string) { await this.#run({ op: "write", id, data }) }
 
-  dispose(): void { for (const [id] of this.#pending) this.respond({ id, ok: false, error: "open-enhance is shutting down" }) }
+  dispose(): void { for (const [id] of this.#pending) this.respond({ id, ok: false, error: "oc-enhance is shutting down" }) }
 }

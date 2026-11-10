@@ -1,223 +1,169 @@
-import { Command, ComposerPill, Plugin, Slot, type MountedSession } from "@opencode/plugin/gui"
-import { createEffect, createSignal, onCleanup, Show } from "solid-js"
-import { Checkpoints, checkpointView, resumeInput, type CheckpointView, type ResumeInput } from "./rpc.js"
+import { Command, ComposerPill, Plugin, SettingsPage, type Context, type MountedSession } from "@opencode/plugin/gui"
+import { createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
+import { EnhanceRpc, type SessionView, type StateView } from "./rpc.js"
 import { Terminals } from "./terminal-rpc.js"
 import { ClientBackend, perform, type Operation, type PtyApi } from "./terminal.js"
 
-type Action = "pause" | "resume" | "status"
-type View = { state: string; busy: boolean }
-const unknown: View = { state: "unknown", busy: false }
+type Client = MountedSession["server"]["client"]
+const muted: JSX.CSSProperties = { opacity: 0.7, "font-size": "12px" }
+const card: JSX.CSSProperties = { border: "1px solid color-mix(in srgb, currentColor 14%, transparent)", "border-radius": "8px", padding: "12px", display: "flex", "flex-direction": "column", gap: "8px" }
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error)).replace(/^.*?Error: /, "")
+const megabytes = (bytes: number) => bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.max(0, Math.round(bytes / 1e6))} MB`
+const ago = (at: number) => { const minutes = Math.round((Date.now() - at) / 60000); return minutes < 1 ? "just now" : minutes < 60 ? `${minutes} min ago` : `${Math.round(minutes / 60)} h ago` }
 
-/** Always resolve the current client of this session's server, including remote servers. */
-export async function callCheckpoint(session: MountedSession, action: Action, signal?: AbortSignal, resume?: ResumeInput): Promise<CheckpointView> {
-  return checkpointView(await session.server.client.rpc(Checkpoints)[action](
-    action === "resume" ? { sessionID: session.id, ...resumeInput(resume!) } : { sessionID: session.id }, { signal, location: session.location },
-  ))
+/** Runs the agent's terminal requests relayed from each connected server, with this window's client. */
+function relayTerminals(ctx: Context) {
+  const listening = new Map<string, () => void>()
+  const watch = () => {
+    for (const id of ctx.servers.list()) {
+      const server = ctx.servers.get(id)
+      if (!server?.connected || !server.compatible) { listening.get(id)?.(); listening.delete(id); continue }
+      if (listening.has(id)) continue
+      const rpc = server.client.rpc(Terminals)
+      const backend = new ClientBackend(server.client.experimental.persistentPty as unknown as PtyApi, server.url)
+      listening.set(id, rpc.events.on("request", async event => {
+        const { id: request, operation } = event.data as { id: string; operation: Operation }
+        const where = (event as { location?: unknown }).location
+        const options = where ? { location: where as never } : undefined
+        try { if (!(await rpc.claim({ id: request }, options) as { ok: boolean }).ok) return } catch { return }
+        try { await rpc.respond({ id: request, ok: true, result: await perform(backend, operation) as never }, options) }
+        catch (error) { await rpc.respond({ id: request, ok: false, error: message(error) }, options).catch(() => {}) }
+      }, { signal: ctx.signal }))
+    }
+  }
+  watch()
+  const timer = setInterval(watch, 5000)
+  ctx.signal.addEventListener("abort", () => { clearInterval(timer); for (const stop of listening.values()) stop() }, { once: true })
+}
+
+function SettingsView(props: { ctx: Context; client: () => Client }) {
+  const { ctx } = props
+  const [state, setState] = createSignal<StateView>()
+  const [error, setError] = createSignal<string>()
+  const api = () => props.client().rpc(EnhanceRpc)
+  const refresh = async () => { try { setState(await api().state({}) as unknown as StateView); setError(undefined) } catch (cause) { setError(message(cause)) } }
+  const act = async (action: () => Promise<unknown>, success?: string) => {
+    try { const next = await action() as StateView; if (next?.settings) setState(next); if (success) ctx.toast.show({ title: success, variant: "success" }) }
+    catch (cause) { ctx.toast.show({ title: "Enhance", description: message(cause), variant: "error" }) }
+    finally { await refresh() }
+  }
+  const toggle = (key: "notes" | "documents" | "search" | "terminals" | "pixi") => (value: boolean) => void act(() => api().update({ [key]: value }))
+  onMount(() => {
+    void refresh()
+    const timer = setInterval(() => { if (document.visibilityState === "visible" && (state()?.search.installing || !state())) void refresh() }, 1500)
+    onCleanup(() => clearInterval(timer))
+  })
+  const feature = (key: "notes" | "documents" | "search" | "terminals" | "pixi", title: string, text: string, extra?: () => JSX.Element) => (
+    <div style={card}>
+      <ctx.ui.Switch label={title} checked={state()!.settings[key]} onChange={toggle(key)} />
+      <span style={muted}>{text}</span>
+      <Show when={state()!.settings[key] && extra}>{extra!()}</Show>
+    </div>
+  )
+  return (
+    <div style={{ display: "flex", "flex-direction": "column", gap: "12px", "font-size": "13px" }}>
+      <Show when={error() && !state()}><div style={{ color: "#e03131" }}>oc-enhance is not answering: {error()}. Is it installed on this server?</div></Show>
+      <Show when={!state() && !error()}><ctx.ui.Loader /></Show>
+      <Show when={state()}>{current => <>
+        {feature("notes", "Task notes, Pause and Resume", "Agents keep short notes (goal, progress, next step) that they see on every turn. Pause above the message box stops the agent and keeps it stopped until you resume; the agent then continues from its notes. Notes can be handed to a colleague as a file in the project (.opencode/handoffs).")}
+        {feature("documents", "Read Word, Excel, PowerPoint and PDF", "Adds read_document: agents read .docx, .xlsx, .pptx and .pdf files as text, by page, slide or sheet. Scanned pages without text are not supported (no OCR).")}
+        {feature("search", "Project search", "Adds search_project: agents find where something is described or implemented when they don't know the exact words, across code and documents. Indexes are kept in oc-enhance's data folder, never in your projects. Works with keywords out of the box; download the search engine for meaning-based search.", () => (
+          <div style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
+            <Show when={!current().search.supported}><span style={muted}>Meaning-based search is not available for {current().search.platform}; keyword search works.</span></Show>
+            <Show when={current().search.supported}>
+              <Show when={current().search.installing} fallback={
+                <div style={{ display: "flex", gap: "8px", "align-items": "center", "flex-wrap": "wrap" }}>
+                  <span style={muted}>{current().search.installed ? `Meaning-based search: installed (${megabytes(current().search.engineBytes)}).` : "Meaning-based search: not installed (download about 290 MB once: ColGrep by LightOn, ONNX Runtime by Microsoft, LateOn-Code-edge model)."}</span>
+                  <Show when={!current().search.installed}><ctx.ui.Button size="small" variant="contrast" icon="download" onClick={() => void act(() => api().installSearch({}))}>Download</ctx.ui.Button></Show>
+                  <Show when={current().search.installed}><ctx.ui.Button size="small" variant="ghost" onClick={() => void act(() => api().removeSearch({}), "Search engine removed")}>Remove</ctx.ui.Button></Show>
+                </div>
+              }>{installing => <span style={muted}>{installing().step} ({installing().done + 1}/{installing().total})…</span>}</Show>
+              <Show when={current().search.error}><span style={{ color: "#e03131", "font-size": "12px" }}>Download failed: {current().search.error}</span></Show>
+            </Show>
+            <div style={{ display: "flex", gap: "8px", "align-items": "center" }}>
+              <span style={muted}>Indexes: {megabytes(current().search.indexBytes)}</span>
+              <ctx.ui.Button size="small" variant="ghost" onClick={() => void act(() => api().clearIndexes({}), "Indexes cleared; they are rebuilt on the next search")}>Clear indexes</ctx.ui.Button>
+            </div>
+          </div>
+        ))}
+        {feature("terminals", "Shared terminals", "Agents can list, read, type into and open terminals in the Review pane (needs OpenCode Desktop to be open). You see everything they type.", () => (
+          <ctx.ui.Switch label="Ask before an agent types into a terminal" checked={current().settings.terminalWrite === "ask"} onChange={value => void act(() => api().update({ terminalWrite: value ? "ask" : "allow" }))} />
+        ))}
+        {feature("pixi", "Pixi know-how", "Agents are reminded to use Pixi for Python (scripts and projects) and to prefer Pixi-managed toolchains, and get a pixi skill with the details. Nothing is blocked.")}
+        <span style={muted}>oc-enhance {current().version} · data in {current().dataDirectory} · settings apply to every session on this computer.</span>
+      </>}</Show>
+    </div>
+  )
 }
 
 export default Plugin.define({
   setup(ctx) {
-    if (ctx.options.terminals === true) {
-      // Shared terminals: run the agent's terminal operations relayed from each connected server, with this window's
-      // authenticated client. A window claims a request first, so only one window ever types it.
-      const listening = new Map<string, () => void>()
-      const watch = () => {
-        for (const id of ctx.servers.list()) {
-          const server = ctx.servers.get(id)
-          if (!server?.connected || !server.compatible) { listening.get(id)?.(); listening.delete(id); continue }
-          if (listening.has(id)) continue
-          const rpc = server.client.rpc(Terminals)
-          const backend = new ClientBackend(server.client.experimental.persistentPty as unknown as PtyApi, server.url)
-          listening.set(id, rpc.events.on("request", async event => {
-            const { id: request, operation } = event.data as { id: string; operation: Operation }
-            // The server runs one plugin instance per project location: answer the instance that asked.
-            const where = (event as { location?: unknown }).location
-            const options = where ? { location: where as never } : undefined
-            try { if (!(await rpc.claim({ id: request }, options) as { ok: boolean }).ok) return } catch { return }
-            try { await rpc.respond({ id: request, ok: true, result: await perform(backend, operation) as never }, options) }
-            catch (error) { await rpc.respond({ id: request, ok: false, error: error instanceof Error ? error.message : String(error) }, options).catch(() => {}) }
-          }, { signal: ctx.signal }))
-        }
-      }
-      watch()
-      const timer = setInterval(watch, 5000)
-      ctx.signal.addEventListener("abort", () => { clearInterval(timer); for (const stop of listening.values()) stop() }, { once: true })
+    relayTerminals(ctx)
+
+    // ---- Pause / Resume above the message box ----
+    const [views, setViews] = createSignal<Record<string, SessionView | "off">>({})
+    const [busy, setBusy] = createSignal<Record<string, boolean>>({})
+    const set = (key: string, value: SessionView | "off") => setViews(previous => JSON.stringify(previous[key]) === JSON.stringify(value) ? previous : { ...previous, [key]: value })
+    const inFlight = new Set<string>()
+    const load = async (session: MountedSession) => {
+      if (session.pending || !session.server.connected || inFlight.has(session.key)) return
+      inFlight.add(session.key)
+      try { set(session.key, await session.server.client.rpc(EnhanceRpc).session({ sessionID: session.id }, { ...(session.location && { location: session.location }) }) as unknown as SessionView) }
+      catch { set(session.key, "off") }
+      finally { inFlight.delete(session.key) }
     }
-    if (ctx.options.checkpoints !== true) return
-
-    const [views, setViews] = createSignal<Record<string, View>>({})
-    const [form, setForm] = createSignal<{ session: MountedSession; revision: number; review: string }>()
-    const versions = new Map<string, number>()
-    const statusRequests = new Map<string, number>()
-    let closeResume: (() => void) | undefined
-    const view = (session: MountedSession) => views()[session.key] ?? unknown
-    const update = (key: string, next: View) => setViews((previous) => ({ ...previous, [key]: next }))
-    const disabled = (session: MountedSession) => view(session).busy || session.pending || !session.server.connected
-    const label = (session: MountedSession) => !session.server.connected ? "disconnected" : session.pending ? "session pending" :
-      view(session).busy ? "request in progress" : view(session).state === "running" ? "gate open" : view(session).state
-
-    async function run(session: MountedSession, action: Action, resume?: ResumeInput, review = false) {
-      if (disabled(session) || ctx.signal.aborted || (action !== "status" && ctx.sessions.current()?.key !== session.key)) return
-      const key = session.key
-      if (action === "status" && !review && statusRequests.has(key)) return
-      const version = (versions.get(key) ?? 0) + 1
-      versions.set(key, version)
-      // Reading status must not flash the label or disable Pause every two seconds.
-      // Mutations supersede pending reads; a late poll cannot overwrite their state.
-      if (action === "status" && !review) statusRequests.set(key, version)
-      else {
-        statusRequests.delete(key)
-        update(key, { state: action === "pause" ? "pending" : "unknown", busy: true })
-      }
+    const act = async (session: MountedSession, action: "pause" | "resume") => {
+      if (busy()[session.key]) return
+      setBusy(previous => ({ ...previous, [session.key]: true }))
       try {
-        const result = await callCheckpoint(session, action, ctx.signal, resume)
-        if (!ctx.signal.aborted && versions.get(key) === version) update(key, { state: result.state, busy: false })
-        if (action === "resume" && result.continuation === "unconfirmed") ctx.toast.show({ title: "Checkpoint gate opened", description: "Continuation was not confirmed. Check the session before submitting another prompt; do not repeat an uncertain operation.", variant: "error" })
-        if (!ctx.signal.aborted && versions.get(key) === version) return result
-      } catch {
-        if (!ctx.signal.aborted && versions.get(key) === version) {
-          update(key, { state: "error", busy: false })
-          if (action !== "status") ctx.toast.show({ title: "Checkpoint request failed", description: action === "resume" ? "No success confirmed. The revision may be stale; cancel and reopen Resume to refresh it. Check the server before retrying." : "Status is unknown. Retry or check the session server.", variant: "error" })
-        }
-      } finally {
-        if (statusRequests.get(key) === version) statusRequests.delete(key)
-      }
+        const view = await session.server.client.rpc(EnhanceRpc)[action]({ sessionID: session.id }, { ...(session.location && { location: session.location }) }) as unknown as SessionView
+        set(session.key, view)
+        if (action === "pause") ctx.toast.show({ title: "Paused", description: "The agent stopped and stays stopped until you resume or send a message.", variant: "success" })
+      } catch (cause) { ctx.toast.show({ title: action === "pause" ? "Could not pause" : "Could not resume", description: message(cause), variant: "error" }) }
+      finally { setBusy(previous => ({ ...previous, [session.key]: false })) }
     }
-
-    async function openResume(session: MountedSession) {
-      if (disabled(session) || ctx.signal.aborted || ctx.sessions.current()?.key !== session.key) return
-      closeResume?.()
-      setForm(undefined)
-      const result = await run(session, "status", undefined, true)
-      if (ctx.signal.aborted || ctx.sessions.current()?.key !== session.key) return
-      if (!result || !Number.isSafeInteger(result.revision)) {
-        ctx.toast.show({ title: "Cannot open resume", description: "A current checkpoint revision is required. Retry after checking the server.", variant: "error" })
-        return
-      }
-      if (result.state === "degraded") {
-        ctx.toast.show({ title: "Checkpoint storage unavailable", description: "Resume was not applied. Repair storage and retry; ordinary native work is not locked by bookkeeping failures.", variant: "error" })
-        return
-      }
-      setForm({ session, revision: result.revision!, review: JSON.stringify({ warnings: result.warnings, workspaceChanged: result.workspaceChanged, notes: result.sessions, operations: result.journal, blockedBy: result.blockedBy }, null, 2) })
-      const handle = ctx.dialogs.open((dialog) => <ResumeReview close={dialog.close} />)
-      closeResume = handle.close
-    }
-
-    async function submitResume() {
-      const captured = form()
-      if (!captured || ctx.sessions.current()?.key !== captured.session.key) return
-      let input: ResumeInput
-      try { input = resumeInput(captured) } catch {
-        ctx.toast.show({ title: "Current revision required", description: "Reopen Resume to refresh the session state.", variant: "error" })
-        return
-      }
-      const result = await run(captured.session, "resume", input)
-      if (result && form() === captured) { closeResume?.(); setForm(undefined) }
-    }
-
-    for (const action of ["pause", "resume"] as const) {
-      ctx.add(Command, (): Command => {
-        const session = ctx.sessions.current()
-        return {
-          id: action, title: action === "pause" ? "Pause at checkpoint" : "Resume checkpoint",
-          section: "session", bind: action === "pause" ? "mod+shift+p" : "mod+shift+r",
-          slash: { name: `enhance-${action}` },
-          enabled: !!session && !session.pending && session.server.connected && !view(session).busy,
-          run: async () => {
-            const current = ctx.sessions.current()
-            if (current && !disabled(current)) { if (action === "resume") await openResume(current); else await run(current, action) }
-          },
-        }
-      })
-    }
+    const timer = setInterval(() => {
+      const session = ctx.sessions.current()
+      if (session && document.visibilityState === "visible") void load(session)
+    }, 3000)
+    ctx.signal.addEventListener("abort", () => clearInterval(timer), { once: true })
 
     ctx.add(ComposerPill, {
-      id: "checkpoint", order: 50,
-      show: (input) => ({
-        label: `Checkpoint: ${label(input.session)}`,
-        title: "Checkpoint gate; not a safe-to-close guarantee",
-        tone: !input.session.server.connected || ["error", "degraded"].includes(view(input.session).state) ? "danger" : undefined,
-        rows: [
-          { id: "status", label: `Status: ${label(input.session)}`, detail: "Pause covers this session tree's agent tools, not manual shells or unrelated sessions" },
-          ...(disabled(input.session) ? [] : [
-            { id: "pause", label: "Pause at checkpoint", run: () => { void run(input.session, "pause") } },
-            { id: "resume", label: "Review and resume…", run: () => { void openResume(input.session) } },
-            { id: "refresh", label: "Refresh status", run: () => { void run(input.session, "status") } },
-          ]),
-        ],
-      }),
+      id: "pause", order: 50,
+      show: input => {
+        const session = input.session
+        const view = views()[session.key]
+        if (view === undefined) { queueMicrotask(() => void load(session)); return undefined }
+        if (view === "off" || session.pending) return undefined
+        if (view.paused) return {
+          label: "Paused · Resume", icon: "status", tone: "warning", title: "Paused. Resume continues from the task notes.",
+          rows: [
+            { id: "resume", label: "Resume (agent continues)", icon: "enter", run: () => void act(session, "resume") },
+            ...(view.notes ? [{ id: "next", label: `Next: ${view.notes.next || view.notes.goal}`.slice(0, 120) }] : []),
+            ...(view.pausedAt ? [{ id: "when", label: `Paused ${ago(view.pausedAt)}${view.interrupted?.length ? `; stopped: ${[...new Set(view.interrupted)].join(", ")}` : ""}`.slice(0, 160) }] : []),
+          ],
+        }
+        return { label: busy()[session.key] ? "Pausing…" : "Pause", icon: "stop", title: "Pause: stop the agent now and keep it stopped until you resume", run: () => void act(session, "pause") }
+      },
+    })
+    ctx.add(Command, () => {
+      const session = ctx.sessions.current()
+      return { id: "pause", title: "Pause agent", group: "Enhance", bind: "mod+shift+p", enabled: !!session && !session.pending, run: () => { const current = ctx.sessions.current(); if (current) void act(current, "pause") } }
+    })
+    ctx.add(Command, () => {
+      const session = ctx.sessions.current()
+      return { id: "resume", title: "Resume paused agent", group: "Enhance", bind: "mod+shift+r", enabled: !!session && !session.pending, run: () => { const current = ctx.sessions.current(); if (current) void act(current, "resume") } }
     })
 
-    for (const action of ["pause", "resume"] as const) {
-      ctx.add(ComposerPill, {
-        id: `checkpoint-${action}`, order: action === "pause" ? 51 : 52,
-        show: (input) => ({
-          label: action === "pause" ? "Pause" : "Resume…",
-          title: action === "pause" ? "Pause at checkpoint; not a safe-to-close guarantee" : "Review checkpoint before resuming",
-          // No menu: these are direct controls. Resume still always opens review.
-          run: disabled(input.session) ? undefined : () => {
-            if (action === "pause") void run(input.session, "pause")
-            else void openResume(input.session)
-          },
-        }),
-      })
-    }
-
-    function Controls(props: { session: MountedSession; active: boolean }) {
-      createEffect(() => {
-        const session = props.session
-        const client = session.server.client // Re-fetch after server restart/re-authentication.
-        const connected = session.server.connected
-        const active = props.active
-        void client
-        if (!active || session.pending) return
-        if (!connected) {
-          versions.set(session.key, (versions.get(session.key) ?? 0) + 1)
-          statusRequests.delete(session.key)
-          update(session.key, unknown)
-          return
-        }
-        // Untracked scheduling avoids re-running this effect on our own status writes.
-        // Do not disable/refocus review inputs on each background poll. Resume
-        // still validates the captured revision against fresh durable state.
-        const refresh = () => { if (form()?.session.key !== session.key) void run(session, "status") }
-        const initial = setTimeout(refresh, 0)
-        const timer = setInterval(refresh, 2000)
-        onCleanup(() => { clearTimeout(initial); clearInterval(timer) })
-      })
-      const unavailable = () => disabled(props.session)
-      return <div style={{ display: "inline-flex", gap: "6px", "align-items": "center", "flex-wrap": "wrap" }}>
-        <span role="status" aria-live="polite" title="Checkpoint status only; not a safe-to-close guarantee.">
-          Checkpoint: {label(props.session)}
-        </span>
-        <details>
-          <summary>Checkpoint actions</summary>
-          <ctx.ui.Button size="small" disabled={unavailable()} onClick={() => void run(props.session, "pause")}>Pause</ctx.ui.Button>
-          <ctx.ui.Button size="small" disabled={unavailable()} onClick={() => void openResume(props.session)}>Review and resume</ctx.ui.Button>
-        </details>
-      </div>
-    }
-
-    function ResumeReview(props: { close: () => void }) {
-      const captured = form()
-      createEffect(() => { if (ctx.sessions.current()?.key !== captured?.session.key) props.close() })
-      onCleanup(() => { if (form()?.session.key === captured?.session.key) setForm(undefined) })
-      const unavailable = () => !captured || disabled(captured.session) || ctx.sessions.current()?.key !== captured.session.key
-      return <ctx.ui.Dialog title="Review checkpoint before resuming">
-        <Show when={form()}>{(current) =>
-          <form style={{ display: "flex", "flex-direction": "column", gap: "12px", padding: "16px", "max-height": "70vh", "overflow": "auto" }} aria-label="Explicit checkpoint resume" onSubmit={(event) => { event.preventDefault(); void submitResume() }}>
-            <span>Resume this session at revision {current().revision}. Interrupted operations may have uncertain outcomes; they will not be automatically replayed. Independently paused children remain paused.</span>
-            <details><summary>Task checkpoint and observed operations</summary><pre style={{ "max-height": "240px", "overflow": "auto", "white-space": "pre-wrap" }}>{current().review}</pre></details>
-            <ctx.ui.Button type="submit" variant="contrast" disabled={unavailable()}>Resume</ctx.ui.Button>
-            <ctx.ui.Button type="button" disabled={unavailable()} onClick={props.close}>Cancel</ctx.ui.Button>
-          </form>
-        }</Show>
-      </ctx.ui.Dialog>
-    }
-
-    ctx.add(Slot, {
-      at: "session.header", order: 50,
-      render: (input) => <Controls session={input.session} active={input.active} />,
+    ctx.add(SettingsPage, {
+      id: "enhance", title: "Enhance", icon: "sliders",
+      entries: [{ id: "enhance", title: "Enhance", description: "Task notes and Pause, documents, project search, shared terminals, Pixi", keywords: "oc-enhance pause resume notes handoff documents word excel powerpoint pdf search terminals pixi" }],
+      render: () => (
+        <ctx.ui.SettingsLayout title="Enhance" description="Small additions to OpenCode. Each one can be turned off; OpenCode's own tools are never changed or blocked.">
+          <SettingsView ctx={ctx} client={() => ctx.client} />
+        </ctx.ui.SettingsLayout>
+      ),
     })
   },
 })
+

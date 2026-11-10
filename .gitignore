@@ -1,8 +1,7 @@
 .pixi/
 node_modules/
-__pycache__/
-.pytest_cache/
-*.pyc
+dist/
 .local/
-*.egg-info/
 .opencode/
+.DS_Store
+.deps.lock

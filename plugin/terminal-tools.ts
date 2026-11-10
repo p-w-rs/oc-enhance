@@ -4,14 +4,10 @@ import { encodeInput, KEYS, RelayBackend, settle, tail, type TerminalBackend, ty
 import { Terminals } from "./terminal-rpc.js"
 
 export interface TerminalOptions {
-  /** "allow" (default) types without asking; "ask" shows the native permission prompt for each write. */
-  readonly write: "allow" | "ask"
-}
-
-export function terminalOptions(raw: unknown): TerminalOptions {
-  const value = raw && typeof raw === "object" ? (raw as Record<string, unknown>).terminalWrite : undefined
-  if (value !== undefined && value !== "allow" && value !== "ask") throw new Error('open-enhance: terminalWrite must be "allow" or "ask"')
-  return { write: (value as "allow" | "ask" | undefined) ?? "allow" }
+  /** Whether the terminal tools are offered (checked on every tool reload). */
+  readonly enabled: () => boolean
+  /** "allow" types without asking; "ask" shows the native permission prompt for each write. */
+  readonly write: () => "allow" | "ask"
 }
 
 const json = (value: unknown) => ({ content: JSON.stringify(value, null, 2) })
@@ -22,8 +18,7 @@ const summary = (info: TerminalInfo, active?: string) => ({
 })
 
 /** Registers the terminal tools and the GUI registration RPC. Returns their disposers. */
-export async function installTerminals(ctx: Plugin.Context, backend?: TerminalBackend): Promise<{ dispose(): Promise<void> }[]> {
-  const options = terminalOptions(ctx.options)
+export async function installTerminals(ctx: Plugin.Context, options: TerminalOptions, backend?: TerminalBackend): Promise<{ dispose(): Promise<void> }[]> {
   const registrations: { dispose(): Promise<void> }[] = []
   let relay: RelayBackend | undefined
   const rpc = await ctx.rpc.register(Terminals, {
@@ -69,6 +64,7 @@ export async function installTerminals(ctx: Plugin.Context, backend?: TerminalBa
   const ID = { type: "string", description: "Terminal id or title (default: the session's most recently active terminal)" }
 
   registrations.push(await ctx.tool.transform(editor => {
+    if (!options.enabled()) return
     editor.add({
       name: "terminal_list",
       description: "List the shared terminals of this session (the user's terminal tabs in the Review pane, and ones you opened): title, working directory, what is running.",
@@ -113,9 +109,9 @@ export async function installTerminals(ctx: Plugin.Context, backend?: TerminalBa
         const data = encodeInput(input.text, input.keys, input.enter === true)
         if (!data) throw new Error("Nothing to type: give text, keys or enter=true")
         const terminal = await pick(context, input.id)
-        if (options.write === "ask") {
+        if (options.write() === "ask") {
           await ctx.permission.assert({
-            sessionID: context.sessionID as never, agent: context.agent as never, action: "open_enhance_terminal_write", resources: [terminal.id], save: [terminal.id],
+            sessionID: context.sessionID as never, agent: context.agent as never, action: "terminal_write", resources: [terminal.id], save: [terminal.id],
             metadata: { terminal: terminal.title, input: data.length > 300 ? `${data.slice(0, 300)}…` : data },
             source: { type: "tool", messageID: context.messageID, id: context.id },
           })

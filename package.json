@@ -1,44 +1,59 @@
 {
-  "name": "open-enhance",
-  "version": "0.2.0",
+  "name": "oc-enhance",
+  "version": "1.0.0",
   "private": true,
+  "license": "UNLICENSED",
   "type": "module",
+  "description": "Small enhancements to OpenCode: task notes with Pause/Resume and handoffs, Word/Excel/PowerPoint/PDF reading, meaning-based project search, shared terminals, Pixi know-how",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/p-w-rs/oc-enhance.git"
+  },
+  "homepage": "https://github.com/p-w-rs/oc-enhance#readme",
+  "bugs": {
+    "url": "https://github.com/p-w-rs/oc-enhance/issues"
+  },
   "exports": {
     ".": "./plugin/index.ts",
-    "./rpc": "./plugin/rpc.ts",
     "./gui-experimental": "./dist/gui-experimental.cjs"
   },
-  "description": "Nonblocking task notes, explicit session pause, portable handoffs, and source-verified evidence for OpenCode V2",
-  "engines": { "node": ">=26.4.0" },
-  "os": ["darwin"],
-  "cpu": ["arm64"],
-  "license": "UNLICENSED",
-  "files": ["plugin/*.ts", "plugin/*.tsx", "!plugin/*.test.ts", "src/open_enhance/*.py", "scripts/*.mjs", "dist/gui-experimental.cjs", "vendor", "docs", "README.md", "pixi.toml", "pixi.lock", "pyproject.toml", "models.lock.json", "npm-shrinkwrap.json", "tsconfig.json", "vite.config.ts"],
+  "files": [
+    "plugin/*.ts",
+    "plugin/*.tsx",
+    "plugin/*.mjs",
+    "!plugin/*.test.ts",
+    "!plugin/test*.ts",
+    "dist/gui-experimental.cjs",
+    "scripts/*.mjs",
+    "skill",
+    "docs",
+    "README.md",
+    "pixi.toml",
+    "pixi.lock",
+    "npm-shrinkwrap.json",
+    "tsconfig.json",
+    "vite.config.ts"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "node --import tsx --test plugin/*.test.ts",
-    "build": "vite build",
-    "pack:check": "node scripts/package-check.mjs",
-    "release:check": "node scripts/release-check.mjs"
+    "test": "node --import tsx --test plugin/*.test.ts scripts/*.test.ts",
+    "build": "vite build"
   },
   "dependencies": {
-    "@opencode/plugin": "2.2.6",
-    "jsonc-parser": "3.3.1"
-  },
-  "overrides": {
-    "@opencode/util@2.2.6": {
-      "glob": "14.0.4",
-      "minimatch": "11.0.5"
-    },
-    "gitlab-ai-provider@6.23.1": "$gitlab-ai-provider",
-    "rimraf@5.0.10": {
-      "glob": "14.0.4"
-    }
+    "fflate": "0.8.3",
+    "ignore": "7.0.14",
+    "jsonc-parser": "3.3.1",
+    "unpdf": "2.1.0"
   },
   "devDependencies": {
-    "gitlab-ai-provider": "file:vendor/gitlab-ai-provider-6.23.1-open-enhance.1.tgz",
-    "@opencode/cli-darwin-arm64": "2.2.6",
-    "@opencode/sdk": "2.2.6",
+    "@opencode/plugin": "2.2.6",
     "@types/node": "24.10.0",
     "solid-js": "1.9.18",
     "tsx": "4.20.6",

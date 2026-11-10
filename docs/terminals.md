@@ -1,6 +1,6 @@
 # Shared terminals
 
-Opt-in (`"terminals": true`). Agents can see and use the session's terminal tabs in
+On by default; turn it off in **Settings → Enhance**. Agents can see and use the session's terminal tabs in
 the Review pane, so you and the agent can share an interactive shell: you start
 something, the agent reads it; the agent types, you watch and can take over at any
 time.
@@ -19,9 +19,10 @@ see their parent's terminals).
 
 ## Permissions
 
-Typing is allowed by default. Set `"terminalWrite": "ask"` in the plugin options to
-get OpenCode's native permission prompt (action `open_enhance_terminal_write`,
-resource = terminal id) before each write; native rules for that action apply.
+Typing is allowed by default. Turn on **Ask before an agent types into a terminal**
+in Settings → Enhance to get OpenCode's native permission prompt (action
+`terminal_write`, resource = terminal id) before each write; native permission rules
+for that action apply, and "Allow always" works as usual.
 
 ## How it works
 
