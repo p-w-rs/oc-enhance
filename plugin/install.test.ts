@@ -37,6 +37,8 @@ test("installer explicitly disables features and removes obsolete global guard c
   const config = parse(configure(source, "/data/releases/new", "/data/releases", options))
   assert.deepEqual(config.plugins[0].options, { evidence: false, checkpoints: true })
   assert.throws(() => featureOptions(["--evidence", "--no-evidence"]), /not both/)
+  assert.deepEqual(featureOptions(["--terminals"]), { terminals: true })
+  assert.deepEqual(featureOptions(["--no-terminals"]), { terminals: false })
 })
 
 test("installer discovers compatible Desktop even when PATH CLI is old, rejecting V1 and malformed versions", () => {

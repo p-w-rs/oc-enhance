@@ -6,7 +6,7 @@ macOS Apple Silicon only (macOS 15+; fresh CLI/backend acceptance on 15.0 and 26
 
 ## Status
 
-- Implemented: best-effort task notes, explicit pause/resume, portable project handoff export/import, desktop composer controls, scoped local evidence search over permitted sources, sandboxed native-text PDF/DOCX extraction, source hashes/citations, external indexes, bounded cancellable workers, synthetic evaluations.
+- Implemented: shared Review-pane terminals for agents (opt-in; read, type, open), best-effort task notes, explicit pause/resume, portable project handoff export/import, desktop composer controls, scoped local evidence search over permitted sources, sandboxed native-text PDF/DOCX extraction, source hashes/citations, external indexes, bounded cancellable workers, synthetic evaluations.
 - Experimental: System 1 tool-ranking **evaluation only**. It never intercepts or executes tool calls.
 - Deliberately absent: shell rewriting, automatic tool hiding, prompt rewriting, general-purpose persistent agent memory, and automatic replacement of native search. Checkpoints contain bounded task summaries and observed operations, not private reasoning or full process snapshots.
 - Not implemented: OCR, visual page retrieval, learned document-specific retrieval, a persistent inference service, or full end-to-end task-success evaluation.
@@ -28,6 +28,9 @@ in the extracted folder, and run:
 ```sh
 pixi run --locked install --checkpoints --evidence
 ```
+
+Add `--terminals` to share the Review-pane terminals with agents (see
+[shared terminals](docs/terminals.md)).
 
 Or, if you already have Git:
 

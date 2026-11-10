@@ -91,7 +91,7 @@ async function snapshot(releases, pixi, dataDirectory) {
 
 export function featureOptions(args) {
   const options = {}
-  for (const feature of ["checkpoints", "evidence"]) {
+  for (const feature of ["checkpoints", "evidence", "terminals"]) {
     if (args.includes(`--${feature}`) && args.includes(`--no-${feature}`)) throw new Error(`Choose enable or disable for ${feature}, not both`)
     if (args.includes(`--${feature}`)) options[feature] = true
     if (args.includes(`--no-${feature}`)) options[feature] = false
@@ -100,12 +100,12 @@ export function featureOptions(args) {
 }
 
 export async function install(args = process.argv.slice(2)) {
-  const allowed = new Set(["--checkpoints", "--no-checkpoints", "--evidence", "--no-evidence", "--uninstall", "--rollback"])
-  if (args.some(value => !allowed.has(value))) throw new Error("Usage: pixi run --locked install --[no-]checkpoints --[no-]evidence | --rollback | --uninstall. The --pixi-guard feature has been removed.")
+  const allowed = new Set(["--checkpoints", "--no-checkpoints", "--evidence", "--no-evidence", "--terminals", "--no-terminals", "--uninstall", "--rollback"])
+  if (args.some(value => !allowed.has(value))) throw new Error("Usage: pixi run --locked install --[no-]checkpoints --[no-]evidence --[no-]terminals | --rollback | --uninstall. The --pixi-guard feature has been removed.")
   const features = featureOptions(args)
   const uninstall = args.includes("--uninstall"), rollback = args.includes("--rollback")
   if ((uninstall || rollback) && args.length !== 1) throw new Error("Choose one installation operation")
-  if (!args.length) throw new Error("Choose features explicitly: --[no-]checkpoints and/or --[no-]evidence")
+  if (!args.length) throw new Error("Choose features explicitly: --[no-]checkpoints, --[no-]evidence and/or --[no-]terminals")
   const configDirectory = path.join(process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"), "opencode")
   const releases = path.join(process.env.XDG_DATA_HOME || path.join(homedir(), ".local/share"), "open-enhance/releases")
   await mkdir(configDirectory, { recursive: true, mode: 0o700 })

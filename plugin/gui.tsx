@@ -1,6 +1,8 @@
 import { Command, ComposerPill, Plugin, Slot, type MountedSession } from "@opencode/plugin/gui"
 import { createEffect, createSignal, onCleanup, Show } from "solid-js"
 import { Checkpoints, checkpointView, resumeInput, type CheckpointView, type ResumeInput } from "./rpc.js"
+import { Terminals } from "./terminal-rpc.js"
+import { ClientBackend, perform, type Operation, type PtyApi } from "./terminal.js"
 
 type Action = "pause" | "resume" | "status"
 type View = { state: string; busy: boolean }
@@ -15,6 +17,32 @@ export async function callCheckpoint(session: MountedSession, action: Action, si
 
 export default Plugin.define({
   setup(ctx) {
+    if (ctx.options.terminals === true) {
+      // Shared terminals: run the agent's terminal operations relayed from each connected server, with this window's
+      // authenticated client. A window claims a request first, so only one window ever types it.
+      const listening = new Map<string, () => void>()
+      const watch = () => {
+        for (const id of ctx.servers.list()) {
+          const server = ctx.servers.get(id)
+          if (!server?.connected || !server.compatible) { listening.get(id)?.(); listening.delete(id); continue }
+          if (listening.has(id)) continue
+          const rpc = server.client.rpc(Terminals)
+          const backend = new ClientBackend(server.client.experimental.persistentPty as unknown as PtyApi, server.url)
+          listening.set(id, rpc.events.on("request", async event => {
+            const { id: request, operation } = event.data as { id: string; operation: Operation }
+            // The server runs one plugin instance per project location: answer the instance that asked.
+            const where = (event as { location?: unknown }).location
+            const options = where ? { location: where as never } : undefined
+            try { if (!(await rpc.claim({ id: request }, options) as { ok: boolean }).ok) return } catch { return }
+            try { await rpc.respond({ id: request, ok: true, result: await perform(backend, operation) as never }, options) }
+            catch (error) { await rpc.respond({ id: request, ok: false, error: error instanceof Error ? error.message : String(error) }, options).catch(() => {}) }
+          }, { signal: ctx.signal }))
+        }
+      }
+      watch()
+      const timer = setInterval(watch, 5000)
+      ctx.signal.addEventListener("abort", () => { clearInterval(timer); for (const stop of listening.values()) stop() }, { once: true })
+    }
     if (ctx.options.checkpoints !== true) return
 
     const [views, setViews] = createSignal<Record<string, View>>({})

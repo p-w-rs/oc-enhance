@@ -8,6 +8,7 @@ import { createWorkerEnvironment, WorkerPool, type WorkerOptions } from "./worke
 import { resolvePixi } from "./runtime.js"
 import { installCheckpoints } from "./checkpoint.js"
 import { Checkpoints, resumeInput } from "./rpc.js"
+import { installTerminals } from "./terminal-tools.js"
 
 const repository = fileURLToPath(new URL("../", import.meta.url))
 const evidenceSchema = {
@@ -75,6 +76,14 @@ export function createPlugin(options: AdapterOptions = {}): Plugin.Plugin {
       }
       } catch {
         console.warn("open-enhance: checkpoint controls unavailable; evidence and native tools remain independent.")
+      }
+      if (ctx.options.terminals === true) {
+        // Shared Review-pane terminals. Independent of checkpoints and evidence.
+        try {
+          for (const registration of await installTerminals(ctx)) cleanups.push(() => registration.dispose())
+        } catch (error) {
+          console.warn(`open-enhance: shared terminals unavailable (${error instanceof Error ? error.message : String(error)}); other features remain.`)
+        }
       }
       if (ctx.options.evidence !== true) return cleanup
       // Evidence setup failure must not remove independent checkpoint controls.
