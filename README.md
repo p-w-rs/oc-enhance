@@ -35,8 +35,8 @@ Add `--terminals` to share the Review-pane terminals with agents (see
 Or, if you already have Git:
 
 ```sh
-git clone https://github.com/p-w-rs/open-enhance.git
-cd open-enhance
+git clone https://github.com/p-w-rs/oc-enhance.git
+cd oc-enhance
 pixi run --locked install --checkpoints --evidence
 ```
 
@@ -77,7 +77,7 @@ work without the maintenance tool; installation never broadens permissions. See
 [checkpoint limits](docs/checkpoints.md) and [desktop controls](docs/desktop.md).
 
 OpenClaude can be installed alongside this plugin using its own
-[`pixi run --locked install`](https://github.com/p-w-rs/open-claude#install).
+[`pixi run --locked install`](https://github.com/p-w-rs/oc-claude#install).
 Neither installer replaces the other's config entry. Source remains `UNLICENSED`;
 installation instructions are not a license grant or production certification.
 
