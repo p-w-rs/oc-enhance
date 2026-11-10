@@ -16,7 +16,7 @@ The primary desktop controls are official **ComposerPill** contributions in the 
 The official `session.header` slot (the timeline title row) retains status and a collapsed **Checkpoint actions** fallback, rather than duplicate primary buttons. This fallback also works for subagent sessions, where the host does not show composer pills. Resume review opens in the host's native dialog, not inside the height-constrained header.
 
 - **Pause** requests a server checkpoint; pending is not paused.
-- **Resume** fetches the current durable revision, then opens a native dialog requiring a reconciliation description and an explicit acknowledgment switch for uncertain side effects. The switch starts off; acknowledgment never means safe to retry. Continue submits the captured revision and user values to that same session/server; Cancel makes no change. A stale revision is rejected by the server, requiring a fresh form. The server resumes and requests continuation only after successful reconciliation validation.
+- **Resume** fetches the current revision, then opens a native confirmation dialog showing notes and uncertainty notices. There is no mandatory prose field or acknowledgment switch. Resume submits only the captured revision to the selected session/server; Cancel changes nothing. Stale revisions require a fresh dialog. Independent child pauses remain paused, and operations are never automatically replayed. Degraded storage cannot claim successful durable Resume.
 - The header fetches status when mounted/activated, after reconnects, and every two seconds while active, except during explicit review so background polling cannot disrupt input focus. Resume still validates the captured revision against fresh durable state. Errors and unavailable servers never count as paused. Restart recovery comes from server status, not persisted GUI flags.
 - Background status reads retain the displayed status and available controls; they do not flash **request in progress** every two seconds. Overlapping background reads are coalesced. Pause can supersede a slow poll, and a late poll cannot overwrite a newer mutation. Resume review requests a fresh revision independently of a pending background poll.
 - During an actual Pause/Resume/review request, session creation, or disconnect, direct controls are unavailable and the pill menu shows status only; action callbacks also recheck availability. Errors are labeled explicitly and allow a status refresh when connected. **Gate open** corresponds to the server's `running` checkpoint state: it means the checkpoint gate is open, not that the native agent is busy or that any work is currently running.
@@ -25,12 +25,15 @@ The official `session.header` slot (the timeline title row) retains status and a
 
 No displayed state is a general **safe-to-close** guarantee. Checkpoints do not establish that background processes, external effects, or unrelated sessions have stopped.
 
-Because the host does not attribute low-level native shell creation to sessions,
-a durable pause or unacknowledged uncertainty conservatively blocks **new shells
-across the shared plugin namespace**, including unrelated sessions. See
+There is no shell-creation hook or cross-session barrier. Unknown outcomes warn
+without locking native work; bookkeeping failures are shown as degraded state. See
 [checkpoint safety limits](checkpoints.md#unattributed-native-shells).
 
 ## Live acceptance on the development Mac
+
+**Historical evidence:** these checks exercised the previous barrier/reconciliation
+implementation. They do not validate the revised nonblocking behavior or current
+revision-only dialog; current source has SDK, CLI and GUI unit/build validation.
 
 An isolated OpenCode 2.2.6 Desktop profile exercised actual composer-pill
 rendering, paused state, a native reconciliation dialog, explicit review/Resume,
@@ -39,8 +42,8 @@ a native permission request with Deny, service restart/reconnection, and closing
 and reopening the same desktop profile. The paused gate and revision survived
 both service and desktop restart, including a newly created descendant.
 Local scripted SSE responses were used, not a real LLM. A live-discovered header
-clipping bug was fixed by using the native dialog; a direct-native-shell bypass
-was fixed by the conservative barrier above. Raw DOM/screenshots/logs stay under
+clipping bug was fixed by using the native dialog; the then-added broad shell
+barrier has since been removed. Raw DOM/screenshots/logs stay under
 `.local/`. This is not a physical sleep/wake or independent-machine test.
 
 Additional live checks passed for stale Resume after a workspace move, switching
@@ -75,6 +78,6 @@ The official `@opencode/plugin/gui/vite` preset in `vite.config.ts` compiles `pl
 
 The project's pinned development dependencies are `solid-js@1.9.18`, `vite@8.3.6`, and `vite-plugin-solid@2.11.15`. Run `pixi run --locked npm exec -- vite build`; the shared modules remain external. Typechecking must include `plugin/**/*.tsx` and `vite.config.ts` with `jsx: "preserve"` and `jsxImportSource: "solid-js"`.
 
-The public contract is `Checkpoints` in `plugin/rpc.ts`, RPC id `open-enhance.checkpoints`. `pause` and `status` take `{ sessionID: string }`; `resume` requires `{ sessionID: string, revision: integer, reconciliation: string, acknowledgeUnknown: boolean }`. Output is `Schema.Unknown`, wrapped as Standard Schema for the 2.2.6 Promise client. The GUI supports both normalized `{state, revision}` objects and the controller's raw durable status (`revision`, `sessions`, `journal`, `blockedBy`) or pause wrapper (`status`, `interruptFailures`). Interrupt failures display **paused with unresolved operations**, never a safe-to-close claim. Server handlers narrow validated JSON input before calling the checkpoint controller. Register only when `checkpoints === true` and dispose the registration with the controller.
+The public contract is `Checkpoints` in `plugin/rpc.ts`, RPC id `open-enhance.checkpoints`. `pause` and `status` take `{ sessionID: string }`; `resume` requires `{ sessionID: string, revision: integer }`. Output is `Schema.Unknown`, wrapped as Standard Schema for the 2.2.6 Promise client. Status includes warnings; uncertain outcomes do not imply paused. Interrupt failures remain visible without becoming a new execution lock. Server handlers validate inputs. Register only when `checkpoints === true` and dispose with the controller.
 
 References: [GUI](https://opencode.ai/docs/build/plugins/gui), [RPC](https://opencode.ai/docs/build/plugins/rpc).

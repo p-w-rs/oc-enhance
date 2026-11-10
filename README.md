@@ -1,18 +1,18 @@
 # open-enhance
 
-**Opt-in enhancements for OpenCode V2. Release candidate under validation—not yet approved for production release.** Native tools and their permissions remain available; enabled policies add explicit execution gates.
+**Opt-in enhancements for OpenCode V2. Release candidate under validation—not yet approved for production release.** Native tools and permissions remain authoritative. Only explicit user Pause gates a session tree; bookkeeping and uncertainty do not lock ordinary work.
 
 macOS Apple Silicon only (macOS 15+; fresh CLI/backend acceptance on 15.0 and 26.6.2, Desktop acceptance on 26.6.2). Pixi **0.81.0 or newer** is the only separately installed project tool, beyond macOS and the OpenCode host. Development uses a repository-owned OpenCode SDK/CLI, not the system installation.
 
 ## Status
 
-- Implemented: strict Python-through-Pixi policy, cross-language Pixi preference, durable pause/checkpoint commands, desktop composer controls with native Resume review dialog, local evidence search, sandboxed native-text PDF/DOCX extraction, source hashes and citations, external indexes, bounded cancellable workers, permission-aware OpenCode tools, synthetic evaluations.
+- Implemented: best-effort task notes, explicit pause/resume, portable project handoff export/import, desktop composer controls, scoped local evidence search over permitted sources, sandboxed native-text PDF/DOCX extraction, source hashes/citations, external indexes, bounded cancellable workers, synthetic evaluations.
 - Experimental: System 1 tool-ranking **evaluation only**. It never intercepts or executes tool calls.
 - Deliberately absent: shell rewriting, automatic tool hiding, prompt rewriting, general-purpose persistent agent memory, and automatic replacement of native search. Checkpoints contain bounded task summaries and observed operations, not private reasoning or full process snapshots.
 - Not implemented: OCR, visual page retrieval, learned document-specific retrieval, a persistent inference service, or full end-to-end task-success evaluation.
 - Technical release readiness requires current-source tests, audits, fresh guest installation, live Desktop checks, and reboot recovery. Physical sleep/wake is optional. Publication and licensing require separate authorization. See [release gates](docs/release.md), [security](docs/security.md), and [evaluation](docs/evaluation.md).
 
-The evidence adapter requires a host with `permission.assert` (tested with **OpenCode 2.2.6**). It fails closed when opted in on unsupported hosts, including 2.0.18. Setup does not upgrade OpenCode or change global configuration.
+The evidence adapter requires `permission.assert` (tested with **OpenCode 2.2.6**). Unsupported hosts disable evidence only; native tools and independent checkpoint controls are not removed. Setup does not upgrade OpenCode or change global configuration.
 
 ## Setup
 
@@ -26,7 +26,7 @@ Download this repository with **Code → Download ZIP**, extract it, open a term
 in the extracted folder, and run:
 
 ```sh
-pixi run --locked install --checkpoints --pixi-guard --evidence
+pixi run --locked install --checkpoints --evidence
 ```
 
 Or, if you already have Git:
@@ -34,10 +34,11 @@ Or, if you already have Git:
 ```sh
 git clone https://github.com/p-w-rs/open-enhance.git
 cd open-enhance
-pixi run --locked install --checkpoints --pixi-guard --evidence
+pixi run --locked install --checkpoints --evidence
 ```
 
-Each flag explicitly enables that feature; omit any you do not want. Installation
+Each flag explicitly enables that feature; use `--no-checkpoints` or `--no-evidence`
+to disable an already enabled feature. Omitted options retain their prior values. Installation
 downloads the evidence backend/model during setup, builds the GUI and prepares an
 independent snapshot under `~/.local/share/open-enhance/releases/` (or
 `$XDG_DATA_HOME/open-enhance/releases/`). It then backs up and updates your global
@@ -56,7 +57,7 @@ Config reload is automatic; use `/reload` if needed. You can remove the download
 source folder after a snapshot installation. Keep snapshots and Pixi installed.
 Update between active tasks: download the new source (or `git pull --ff-only` in
 a clean checkout), then rerun the install command. Existing enabled features stay
-enabled; disable them explicitly in plugin options if desired. Recovery commands:
+enabled unless explicitly disabled with `--no-checkpoints`/`--no-evidence`. Recovery commands:
 
 ```sh
 pixi run --locked install --rollback
@@ -68,9 +69,8 @@ plugin's config entry; snapshots, evidence data and stored checkpoints remain.
 If installation reports an existing lock or incomplete snapshot, inspect the
 reported path and confirm no installer is running; do not delete broad data trees.
 
-With checkpoints enabled, agents must be permitted to maintain
-`open_enhance_checkpoint`. Custom/read-only agents that deny it fail closed;
-installation deliberately does not broaden their permissions. See
+Checkpoint notes are optional and objectives can change. Custom/read-only agents
+work without the maintenance tool; installation never broadens permissions. See
 [checkpoint limits](docs/checkpoints.md) and [desktop controls](docs/desktop.md).
 
 OpenClaude can be installed alongside this plugin using its own
@@ -107,7 +107,7 @@ To contain data inside this checkout, set an **absolute** `OPEN_ENHANCE_HOME` en
 
 Models and third-party components retain their own licenses. `models.lock.json` records model identities. System 1 models are not downloaded by ordinary setup; the explicit decision evaluation task downloads the selected model.
 
-## Python policy and pause/resume
+## Checkpoints, handoffs and evidence
 
 All features are independently opt-in:
 
@@ -117,7 +117,6 @@ All features are independently opt-in:
   "plugins": [{
     "package": "/absolute/path/to/open-enhance",
     "options": {
-      "pixiGuard": true,
       "checkpoints": true,
       "evidence": false,
       "pixiExecutable": "/absolute/path/to/pixi"
@@ -128,20 +127,20 @@ All features are independently opt-in:
 
 `pixiExecutable` is needed when Desktop's PATH does not include Pixi. It controls plugin-owned Python workers; there is no direct-Python fallback. Keep the checkout/install directory and its Pixi environment available while the plugin runs. Do not enable unbuilt GUI entries: run `build` first. Desktop GUI contributions require a global plugin entry. The development `setup` task does **not** edit configuration; the explicit `install` task above does.
 
-### Python only through Pixi
+### Native tools remain native
 
-The guard refuses direct Python/interpreter/tool commands, including absolute `.pixi` Python paths. Projects use a locked Pixi workspace; standalone Python scripts use PEP 723 metadata and `pixi run --script`. Dependencies are declared with Pixi, not mutated through `pixi run pip install`. Other languages get a strong preference for Pixi-managed toolchains, without forced migrations.
+The global shell/Python guard has been removed, not made configurable. No shell grammar policing, tool denylist or strict Python-policy instruction is injected. Existing `pixiGuard` options are ignored and removed on managed reinstall. Plugin-owned Python still uses the locked Pixi runtime; native commands follow native permissions and project instructions.
 
-The guard inspects native shell tool dispatch and shell creation. It rejects ambiguous shell constructs rather than silently rewriting them. It is a command-policy guard, **not an OS-wide guarantee** about arbitrary programs, remote MCP servers, editor services, or hidden subprocesses. See [coverage and examples](docs/pixi-policy.md).
+See [runtime boundaries](docs/pixi-policy.md) and the [restriction review](docs/restriction-review.md).
 
 ### Durable pause
 
 - **Checkpoint controls** provide stable status plus direct **Pause** and **Resume…** controls in the native composer-pill row, with a session-header fallback. Background polling does not flash the label or disable actions. Resume review uses a native dialog; Send/Stop is unchanged.
 - Desktop commands/shortcuts: Pause `⌘⇧P`, Resume `⌘⇧R` (customizable in OpenCode).
 - Server commands: `/enhance-pause`, `/enhance-status`, `/enhance-resume`.
-- `/enhance-forget confirm` explicitly removes settled checkpoint history for the current session tree; paused or unresolved work cannot be forgotten.
+- `/enhance-forget confirm` removes checkpoint history for the current session tree; resume explicitly paused work first.
 
-The agent must save bounded origin/current/next notes before other observed tool dispatch. Tool starts/outcomes are journaled durably without storing raw arguments or results. Pause persists an ancestor gate before requesting interruption of the session tree. Ordinary messages do not unpause it. After a restart, interrupted calls become unknown—not automatically retried.
+Notes are optional and objectives are mutable. Tool observations omit raw arguments/results; Code Mode records its outer envelope. Storage failures visibly degrade bookkeeping, not native tool access. Unknown outcomes warn without locking the session or automatically retrying anything. Explicit Pause still gates the selected session tree; ordinary messages do not silently unpause it.
 
 Closing the lid does **not** automatically pause a session. Use explicit Pause
 and reconcile before Resume. Storage is native OpenCode plugin storage, not a
@@ -149,11 +148,38 @@ power-loss-safe external journal: an abrupt unflushed VM power cut lost a recent
 Pause write. Do not infer a sudden-power-loss guarantee from restart, reboot or
 VM-suspension checks.
 
-OpenCode's lower-level shell hook has no session identity. While any checkpoint is paused or has unacknowledged uncertainty, **new shells across the shared plugin namespace are conservatively blocked**, including shells in otherwise unrelated sessions. Direct native/manual shell activity is not falsely attributed to a tool journal. This opt-in safety boundary avoids a native-shell bypass; see [checkpoint limits](docs/checkpoints.md).
+There is no cross-session checkpoint shell barrier. OpenCode's lower-level shell hook lacks session identity, so checkpoints do not gate it: unrelated sessions keep working, and direct native/manual shells remain outside checkpoint pause coverage. See [checkpoint limits](docs/checkpoints.md).
 
-Resume displays the recorded notes and operations, requires explicit reconciliation, and separately acknowledges uncertain side effects. **File changes are not automatically snapshotted or verified:** inspect the workspace/external effects before confirming; continuation instructions also require verification. The plugin cannot freeze or guarantee cancellation of arbitrary external jobs. A paused badge is not a universal “safe to close” guarantee. See [precise semantics and limits](docs/checkpoints.md) and [desktop controls](docs/desktop.md).
+Resume displays notes and uncertainty notices and requires an explicit click, not a reconciliation essay or acknowledgment checkbox. Independently paused children stay paused. **File changes are not snapshotted or verified.** The plugin cannot freeze arbitrary external jobs; a paused badge is not a universal “safe to close” guarantee. See [semantics and limits](docs/checkpoints.md) and [desktop controls](docs/desktop.md).
 
 Checkpoints live in OpenCode's plugin storage and may contain private task summaries. Disabling/removing the plugin removes its gates; it does not reverse work or erase stored data. Evidence data remains separate.
+
+### Portable project handoff
+
+Local runtime state is stored under the plugin's native `checkpoints/v1` key,
+not in the project. To share a task, export notes with `open_enhance_handoff`,
+save its JSON via native file tools at **`.opencode/handoffs/<task>.json`**, review
+it for sensitive content and share it with the project. Another user/session can
+read and import that file. No pause flags, permissions, session identity or
+operations transfer, and nothing is automatically executed. See the
+[handoff format and workflow](docs/checkpoints.md#share-a-task-with-another-user-or-session).
+
+### Scoped, partial evidence coverage
+
+`open_enhance_search` accepts a workspace-relative `scope` subdirectory. Sources
+are individually authorized; native rule-denied candidates are excluded and
+counted, while user rejection/feedback and cancellation still stop the request.
+Oversized inventories return bounded partial coverage with `truncated: true`.
+Single-token reads check only that source's native permissions.
+
+Plugin option `evidencePolicy` supports `includeHidden`, `includeGenerated`,
+`includeSensitiveNames` (all default false), plus lower `maxFiles` and
+`maxSourceBytes` budgets within the 5,000-file/96-MiB ceilings. `.git`, `.local`
+and `.pixi` are always excluded from evidence. These are coverage filters, not
+secret scanning. Local Git exclusions remain authoritative; `.ignore` and global
+ignore exclusions are not imported. Source/storage separation and no-follow
+checks remain in force. Different authorized inventories/scopes use isolated
+mirrors; old mirrors remain local private data until explicitly removed.
 
 ## Try evidence search without installing the plugin
 
@@ -188,7 +214,7 @@ After setup, add a local plugin entry to the configuration you choose:
 
 Optional `dataDirectory` must be an absolute path matching setup's `OPEN_ENHANCE_HOME`. The plugin registers only `open_enhance_search` and `open_enhance_read`. Without `evidence: true`, it registers nothing.
 
-The adapter obtains the **invoking session's** directory on each call. It authorizes the source inventory before extraction and refuses workspace search if applicable read-deny rules exist. This is intentionally more conservative than native narrow-file reads. It does not scan hidden files, follow source symlinks, or index known secret filenames. These safeguards are not a guarantee that arbitrary source files contain no sensitive data.
+The adapter obtains the **invoking session's** directory on each call. It authorizes each selected source before extraction and excludes native rule-denied candidates without disabling permitted retrieval. It never follows source symlinks. Hidden/generated/sensitive-looking names are excluded by default and can be explicitly included through coverage options. No filename filter guarantees that arbitrary source files contain no sensitive data.
 
 Local `.gitignore` exclusions are honored. `.ignore` and global ignore-file exclusions are not currently imported; see the [security boundaries](docs/security.md) before selecting a workspace.
 

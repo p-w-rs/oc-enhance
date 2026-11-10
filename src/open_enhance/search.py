@@ -37,22 +37,22 @@ def workspace_lock(directory: Path):
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def workspace_home(root: Path) -> Path:
+def workspace_home(root: Path, selection: str = "") -> Path:
     data = data_root()
     if data.is_relative_to(root) or root.is_relative_to(data):
         raise PolicyError("Source workspace and plugin storage must not overlap; choose another data directory")
-    return data / "workspaces" / digest(os.fsencode(root))[:24]
+    return data / "workspaces" / digest(os.fsencode(root) + selection.encode())[:24]
 
 
-def prepare(root: Path, home: Path, allowed_paths: list[str] | None = None) -> tuple[list[dict], dict]:
+def prepare(root: Path, home: Path, allowed_paths: list[str] | None = None, options: dict | None = None, scope: str = "") -> tuple[list[dict], dict]:
     if home.is_relative_to(root) or root.is_relative_to(home):
         raise PolicyError("Source workspace and index storage must not overlap")
     with SafeDirectory(home, create=True) as storage, SafeDirectory(home / "mirror", create=True) as mirror:
-        return _prepare(root, storage, mirror, allowed_paths)
+        return _prepare(root, storage, mirror, allowed_paths, options, scope)
 
 
-def _prepare(root: Path, storage: SafeDirectory, mirror: SafeDirectory, allowed_paths: list[str] | None) -> tuple[list[dict], dict]:
-    paths, stats = discover(root)
+def _prepare(root: Path, storage: SafeDirectory, mirror: SafeDirectory, allowed_paths: list[str] | None, options: dict | None = None, scope: str = "") -> tuple[list[dict], dict]:
+    paths, stats = discover(root, options, scope)
     if allowed_paths is not None:
         allowed = set(allowed_paths)
         paths = [path for path in paths if str(path) in allowed]
@@ -79,7 +79,7 @@ def _prepare(root: Path, storage: SafeDirectory, mirror: SafeDirectory, allowed_
     for relative in paths:
         source = root / relative
         try:
-            data = read_source(root, str(relative))
+            data = read_source(root, str(relative), options)
         except (OSError, PolicyError):
             errors.append({"path": str(relative), "reason": "Source changed or became inaccessible"})
             continue
@@ -103,7 +103,9 @@ def _prepare(root: Path, storage: SafeDirectory, mirror: SafeDirectory, allowed_
                 continue
         extracted_bytes += sum(len(unit["text"].encode("utf-8")) for unit in units)
         if extracted_bytes > 64 * 1024 * 1024 or len(records) + len(units) > 10000:
-            raise PolicyError("Extracted workspace exceeds the indexing budget; select a narrower folder")
+            stats["truncated"] = True
+            errors.append({"path": key, "reason": "Extracted workspace budget reached; select a narrower scope for more coverage"})
+            continue
         sources[key] = {"sha256": sha, "units": units}
         for number, unit in enumerate(units):
             # Keep one semantic result per evidence unit. Never expose source names/content
@@ -170,7 +172,11 @@ def semantic(home: Path, query: str, limit: int) -> list[tuple[str, float]]:
     return output
 
 
-def search(root: Path, query: str, mode: str = "semantic", limit: int = 5, allowed_paths: list[str] | None = None) -> dict:
+def selection_key(allowed_paths: list[str] | None = None, options: dict | None = None, scope: str = "") -> str:
+    return json.dumps({"allowed": sorted(allowed_paths) if allowed_paths is not None else None, "options": options, "scope": scope}, sort_keys=True) if allowed_paths is not None or options or scope else ""
+
+
+def search(root: Path, query: str, mode: str = "semantic", limit: int = 5, allowed_paths: list[str] | None = None, options: dict | None = None, scope: str = "") -> dict:
     started = time.monotonic()
     # The adapter has already authorized this canonical path. Resolving it again
     # could silently redirect an authorized path after an ancestor is replaced.
@@ -179,9 +185,11 @@ def search(root: Path, query: str, mode: str = "semantic", limit: int = 5, allow
         raise PolicyError("Query must contain 1–4000 characters")
     if mode not in {"auto", "semantic", "lexical"} or not 1 <= limit <= 10:
         raise PolicyError("Invalid search mode or limit")
-    home = workspace_home(root)
+    # Different permissions/scopes must not share a semantic mirror containing
+    # previously authorized sources from another invocation.
+    home = workspace_home(root, selection_key(allowed_paths, options, scope))
     with workspace_lock(home):
-        records, stats = prepare(root, home, allowed_paths)
+        records, stats = prepare(root, home, allowed_paths, options, scope)
         # Native tools remain the right path for exact/exhaustive work. This tool's
         # auto mode combines complementary rankings; it never intercepts native calls.
         route = "hybrid" if mode == "auto" else mode
@@ -207,7 +215,7 @@ def search(root: Path, query: str, mode: str = "semantic", limit: int = 5, allow
         results = []
         seen_paths = set()
         stale = 0
-        currently_eligible = {str(path) for path in discover(root)[0]}
+        currently_eligible = {str(path) for path in discover(root, options, scope)[0]}
         for identifier, score in fused.most_common():
             if identifier not in by_id:
                 continue
@@ -216,7 +224,7 @@ def search(root: Path, query: str, mode: str = "semantic", limit: int = 5, allow
                 continue
             evidence = token(record["path"], record["sha256"], record["locator"])
             try:
-                verified = read_evidence(root, evidence, eligible_paths=currently_eligible)
+                verified = read_evidence(root, evidence, eligible_paths=currently_eligible, options=options)
             except (OSError, PolicyError, ValueError):
                 stale += 1
                 continue

@@ -97,19 +97,18 @@ test("isolated SDK checkpoint controllers coordinate across locations and delete
         await assert.rejects(host.session.prompt({sessionID:sessionA.id,text:'Ordinary input cannot reopen A'}));
         if (i === 0) {
           const child = await host.session.create({parentID:sessionA.id,location:{directory:roots[1]}});
-          const marker = roots[1]+'/forbidden-native-shell-marker';
+          const marker = roots[1]+'/manual-native-shell-marker';
           assert.ok((await b.controller.status(child.id)).blockedBy.includes(sessionA.id));
-          await assert.rejects(host.session.shell({sessionID:child.id,command:'/usr/bin/touch '+marker}));
-          await assert.rejects(access(marker), {code:'ENOENT'});
-          // The lower-level shell hook has no session identity: even an
-          // unrelated B native shell is conservatively blocked until A resumes.
-          await assert.rejects(host.session.shell({sessionID:sessionB.id,command:'/usr/bin/touch '+marker}));
-          await assert.rejects(access(marker), {code:'ENOENT'});
+          // Manual native shells are outside checkpoint tool-dispatch coverage.
+          // In particular, A's pause must never block unrelated B shell work.
+          await host.session.shell({sessionID:sessionB.id,command:'/usr/bin/touch '+marker});
+          await host.session.wait({sessionID:sessionB.id});
+          await access(marker);
         }
-        // B activity must not stale A's scoped reconciliation revision.
+        // B activity must not stale A's scoped Resume revision.
         await update(b, sessionB.id, 'B independent progress '+i);
         assert.equal((await a.controller.status(sessionA.id)).revision, paused.revision);
-        const resumed = await a.controller.resume(sessionA.id,{revision:paused.revision,reconciliation:'Synthetic workspace and settled callback reviewed',acknowledgeUnknown:false});
+        const resumed = await a.controller.resume(sessionA.id,{revision:paused.revision});
         assert.equal(resumed.state, 'running');
       }
 
@@ -121,7 +120,7 @@ test("isolated SDK checkpoint controllers coordinate across locations and delete
       const paused = await a.controller.pause(sessionA.id);
       assert.equal(paused.status.state, 'paused');
       assert.deepEqual(paused.interruptFailures, []);
-      const resumed = await a.controller.resume(sessionA.id,{revision:paused.status.revision,reconciliation:'Reviewed A independently of deleted unrelated B',acknowledgeUnknown:false});
+      const resumed = await a.controller.resume(sessionA.id,{revision:paused.status.revision});
       assert.equal(resumed.state, 'running');
       assert.deepEqual(resumed.blockedBy, []);
       // SDK activation may probe local-provider discovery even with model

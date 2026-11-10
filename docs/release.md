@@ -38,7 +38,7 @@ Raw logs, synthetic test installations, models and aggregate receipts remain in
 - Actual native active-parent/child interruption with the descendant gate retained.
 - Orderly guest shutdown and cold boot during active native tool execution:
   checkpoint recovery, unknown-operation gating, no replay, descendant confinement
-  and explicit reconciliation before new execution.
+   and explicit Resume before new execution when the user had paused it.
 - Small actual anonymous-model ordinary and policy-pressure synthetic workflows.
   These are integration acceptance, not broad accuracy or model recommendations.
 
@@ -67,8 +67,11 @@ physical power loss are distinct tests.
 
 Other security boundaries remain unchanged: native permissions are preserved;
 Pixi policy is not an OS-wide sandbox; unknown operations are never automatically
-replayed; reconciliation is manual, not a filesystem snapshot. The namespace-wide
-shell barrier is conservative because native shell creation lacks session identity.
+replayed; notes are unverified, not a filesystem snapshot. Uncertainty and
+bookkeeping failures no longer create execution locks. The namespace-wide
+checkpoint shell barrier has been removed: manual shells lack session attribution
+and are outside pause coverage. Older Desktop shell-gate receipts describe the old
+implementation, not acceptance of this change. See the [restriction review](restriction-review.md).
 The parser sandbox has a sampled RSS watchdog, not an instantaneous hard memory
 ceiling, and Apple's deprecated sandbox API fails closed if unavailable.
 

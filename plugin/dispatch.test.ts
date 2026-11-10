@@ -8,7 +8,7 @@ import { promisify } from "node:util"
 
 // This is engine dispatch, not execution of a captured tool.list() executor.
 // Only the provider transport is fake: the SDK parses SSE and dispatches tools.
-test("isolated SDK dispatch enforces Pixi and durable checkpoint hooks with fake model SSE", { timeout: 90_000 }, async () => {
+test("isolated SDK dispatch keeps native shell and Code Mode working with checkpoint hooks", { timeout: 90_000 }, async () => {
   const repository = fileURLToPath(new URL("../", import.meta.url))
   await mkdir(path.join(repository, ".local"), { recursive: true })
   const home = await realpath(await mkdtemp(path.join(repository, ".local", "dispatch-")))
@@ -31,7 +31,7 @@ test("isolated SDK dispatch enforces Pixi and durable checkpoint hooks with fake
     const project = ${JSON.stringify(project)};
     const marker = path.join(root, 'forbidden-marker');
     const missing = async () => assert.rejects(access(marker), {code:'ENOENT'});
-    let requests = 0, calls = [], contexts = [], shellEvents = [], toolEvents = [], controller, pendingObserved = false, shellCompleted = false;
+    let requests = 0, calls = [], contexts = [], shellEvents = [], toolEvents = [], controller, pendingObserved = false, shellCompleted = false, webProbeCalls = 0;
     await writeFile(path.join(project,'pixi.toml'), '[workspace]\\nname = "synthetic-dispatch"\\nchannels = []\\nplatforms = ["osx-arm64"]\\n[tasks]\\nprobe = "pwd"\\n');
     await promisify(execFile)(${JSON.stringify(pixi)}, ['lock'], {cwd:project,env:process.env});
     const fakeFetch = async (input, init) => {
@@ -48,7 +48,6 @@ test("isolated SDK dispatch enforces Pixi and durable checkpoint hooks with fake
     // Every outbound fetch is intercepted; no listener, credentials or service.
     globalThis.fetch = fakeFetch;
     const {OpenCode} = await import('@opencode/sdk');
-    const {installPixiPolicy} = await import(${JSON.stringify(new URL("./pixi-policy.ts", import.meta.url).href)});
     const {installCheckpoints} = await import(${JSON.stringify(new URL("./checkpoint.ts", import.meta.url).href)});
     const createHost = () => OpenCode.create({
       database:{path:${JSON.stringify(path.join(home, "dispatch.sqlite"))}},
@@ -66,8 +65,12 @@ test("isolated SDK dispatch enforces Pixi and durable checkpoint hooks with fake
         await ctx.session.hook('context', event => {contexts.push(Object.keys(event.tools));});
         await ctx.tool.hook('execute.before', event => {toolEvents.push({tool:event.tool,input:event.input});});
         await ctx.shell.hook('create.before', event => {shellEvents.push(event.command);});
-        const policy = await installPixiPolicy({...ctx,options:{pixiGuard:true}});
         controller = await installCheckpoints({...ctx,options:{checkpoints:true}});
+        await ctx.tool.transform(editor => editor.add({
+          name:'web_probe',description:'Synthetic web-like Code Mode tool, no network',
+          input:{type:'object',properties:{}},
+          execute:async () => {webProbeCalls++;return {content:'synthetic web response'};},
+        }));
         await ctx.tool.transform(editor => editor.update('shell', tool => {
           const execute = tool.execute;
           tool.execute = async (input, context) => {
@@ -83,7 +86,7 @@ test("isolated SDK dispatch enforces Pixi and durable checkpoint hooks with fake
             shellCompleted = true;
           }
         });
-        return async () => {await controller.dispose();await policy?.();};
+        return async () => {await controller.dispose();};
       }}],
     });
     let host = await createHost();
@@ -96,7 +99,7 @@ test("isolated SDK dispatch enforces Pixi and durable checkpoint hooks with fake
         await host.session.prompt({sessionID:restricted.id,text:'Synthetic restricted checkpoint initialization'});
         await host.session.wait({sessionID:restricted.id});
       } catch { /* Native execution may report the context rejection to wait. */ }
-      assert.equal(requests,beforeRestricted,'an unavailable checkpoint tool must not induce rejected-tool model loops');
+      assert.equal(requests,beforeRestricted+1,'restricted agents can complete without checkpoint initialization');
       assert.ok(contexts.some(tools=>!tools.includes('open_enhance_checkpoint')),'native permissions actually hid the maintenance tool');
       stage = 'create';
       const session = await host.session.create({location:{directory:root}});
@@ -108,22 +111,17 @@ test("isolated SDK dispatch enforces Pixi and durable checkpoint hooks with fake
         await host.session.wait({sessionID:session.id});
         assert.equal(calls.length,0,'engine consumed scripted tool calls');
       };
+      stage = 'Code Mode nested parallel and repeated web-like tools without notes';
+      await run([{name:'execute',input:{code:'await Promise.all([tools.web_probe({}), tools.web_probe({})]); return await tools.web_probe({});'}}]);
+      assert.equal(webProbeCalls,3,'nested tools sharing the outer call ID all execute');
+      assert.ok((await controller.status(session.id)).journal.some(entry=>entry.tool==='execute' && entry.outcome==='completed'));
       stage = 'checkpoint';
       await run([{name:'open_enhance_checkpoint',input:{origin:'Synthetic dispatch safety',current:'Ready',next:'Check guarded command',decisions:[],paths:[]}}]);
       assert.ok(contexts.some(tools=>tools.includes('shell') && tools.includes('open_enhance_checkpoint')));
-      const command = 'python3 -c \\'open("forbidden-marker", "w").write("bad")\\'';
-      const beforeDenied = shellEvents.length;
-      stage = 'denied model shell';
-      await run([{name:'shell',input:{command,description:'Synthetic forbidden Python'}}]);
-      assert.ok(toolEvents.some(event=>event.tool==='shell' && event.input.command===command));
-      assert.equal(shellEvents.length,beforeDenied,'tool before rejection prevents reaching shell creation');
-      assert.match(JSON.stringify(await host.session.context({sessionID:session.id})),/open-enhance Pixi policy/,'engine records the policy rejection, not an unrelated dispatch failure');
-      await missing();
-      // The explicit shell API bypasses model tool dispatch; it must still be guarded.
-      stage = 'denied explicit shell';
-      await assert.rejects(host.session.shell({sessionID:session.id,command}));
-      await host.session.wait({sessionID:session.id});
-      assert.ok(shellEvents.includes(command),'explicit shell reaches native shell hook');
+      stage = 'ordinary model shell with grouping and redirection';
+      const command = '(pwd > native-output) && cat < native-output';
+      await run([{name:'shell',input:{command,workdir:project,description:'Synthetic native shell syntax'}}]);
+      assert.ok(shellEvents.includes(command));
       await missing();
       stage = 'allowed Pixi model shell';
       await run([{name:'shell',input:{command:'pixi run --locked probe',workdir:project,description:'Synthetic benign pwd task in selected workdir'}}]);
@@ -146,13 +144,13 @@ test("isolated SDK dispatch enforces Pixi and durable checkpoint hooks with fake
       const beforePauseRequests = requests;
       await assert.rejects(host.session.prompt({sessionID:session.id,text:'Ordinary message must not resume'}));
       assert.equal(requests,beforePauseRequests);
-      assert.equal((await controller.resume(session.id)).state,'needs-reconciliation');
+      await assert.rejects(controller.resume(session.id),/revision/);
       const current = await controller.status(session.id);
       assert.equal(current.state,'paused');
-      assert.equal((await controller.resume(session.id,{revision:current.revision,reconciliation:'Synthetic workspace checked; no forbidden marker exists',acknowledgeUnknown:true})).state,'running');
+      assert.equal((await controller.resume(session.id,{revision:current.revision})).state,'running');
       await run([]);
       await missing();
-      console.log(JSON.stringify({status:'ok',requests,toolBeforeBlocked:true,shellBeforeBlocked:true,pendingObserved,shellCompleted,pauseResume:true,restartPaused:true}));
+      console.log(JSON.stringify({status:'ok',requests,nativeShellPreserved:true,pendingObserved,shellCompleted,pauseResume:true,restartPaused:true}));
     } finally {await host.close();}
   `
   try {
@@ -171,8 +169,7 @@ test("isolated SDK dispatch enforces Pixi and durable checkpoint hooks with fake
     })
     const result = JSON.parse(stdout.trim().split("\n").at(-1)!) as Record<string, unknown>
     assert.equal(result.status, "ok", JSON.stringify(result))
-    assert.equal(result.toolBeforeBlocked, true)
-    assert.equal(result.shellBeforeBlocked, true)
+    assert.equal(result.nativeShellPreserved, true)
     assert.equal(result.pendingObserved, true)
     assert.equal(result.shellCompleted, true)
     assert.equal(result.pauseResume, true)

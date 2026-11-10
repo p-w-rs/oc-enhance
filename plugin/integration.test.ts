@@ -63,7 +63,7 @@ test("isolated SDK loads adapter and executes search without a model request", {
       const search = tools.find(t => t.id === 'open_enhance_search');
       assert.ok(search);
       const result = await search.execute({query:'synthetic',mode:'lexical',limit:1}, {sessionID:session.id,agent:'build',messageID:'smoke-message',id:'smoke-call',signal:new AbortController().signal,progress:async()=>{}});
-      assert.deepEqual(JSON.parse(result.content), {results:[]});
+      assert.deepEqual(JSON.parse(result.content).results, []);
       console.log(JSON.stringify({status:'ok', nativeReadPreserved:true, modelRequests:0}));
     } finally { await host.close(); }
   `
@@ -143,14 +143,22 @@ test("isolated SDK searches and reads real Python lexical evidence without modif
       assert.deepEqual(verified.evidence,hit.evidence);
       assert.match(verified.text,/cobalt otter calibration uses exactly seventeen pulses/);
       assert.deepEqual(await snapshot(root),before,'source files and workspace entries must remain unchanged');
-      const indexedBeforeDenial = await snapshot(dataDirectory);
       await host.session.update({sessionID:session.id,permissions:[
         {action:'read',resource:'*',effect:'allow'},
         {action:'read',resource:path.join(root,'navigation.md'),effect:'deny'},
       ]});
-      await assert.rejects(search.execute({query:'cobalt',mode:'lexical',limit:1},context),/read-deny/);
-      await assert.rejects(read.execute({evidence:hit.evidence},context),/read-deny/);
-      assert.deepEqual(await snapshot(dataDirectory),indexedBeforeDenial,'denial must not invoke indexing or mutate evidence data');
+      const permitted = JSON.parse((await search.execute({query:'cobalt',mode:'lexical',limit:1},context)).content);
+      assert.deepEqual(permitted.results,[],'denied source never enters permitted-subset results');
+      assert.equal(permitted.authorization.denied_files,1,'native rule denial excludes only that candidate');
+      assert.equal(permitted.authorization.authorized_files,1);
+      await assert.rejects(read.execute({evidence:hit.evidence},context),/Permission denied/);
+      const secondSession = await host.session.create({location:{directory:root}});
+      await host.session.update({sessionID:secondSession.id,permissions:[
+        {action:'read',resource:'*',effect:'allow'},
+        {action:'read',resource:path.join(root,'unrelated.txt'),effect:'deny'},
+      ]});
+      const another = JSON.parse((await read.execute({evidence:hit.evidence},{...context,sessionID:secondSession.id})).content);
+      assert.equal(another.status,'verified','unrelated deny does not block single-token read');
       assert.deepEqual(await snapshot(root),before);
       console.log(JSON.stringify({status:'ok',backend:'python-lexical',verified:true,sourcesUnchanged:true,nativeToolsPreserved:true,denialBlocked:true,modelRequests:0}));
     } finally { await host.close(); }

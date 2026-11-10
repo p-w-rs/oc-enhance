@@ -8,7 +8,7 @@
     "./rpc": "./plugin/rpc.ts",
     "./gui-experimental": "./dist/gui-experimental.cjs"
   },
-  "description": "Opt-in Pixi execution policy, durable pause checkpoints, and source-verified evidence for OpenCode V2",
+  "description": "Nonblocking task notes, explicit session pause, portable handoffs, and source-verified evidence for OpenCode V2",
   "engines": { "node": ">=26.4.0" },
   "os": ["darwin"],
   "cpu": ["arm64"],

@@ -1,206 +1,126 @@
-# Durable checkpoints (opt-in)
+# Checkpoints and portable project handoffs
 
-Server implementation: `plugin/checkpoint.ts`, targeting the public
-`@opencode/plugin` **2.2.6** Promise API. This is an opt-in prototype, not a
-release-ready process freezer, filesystem snapshot, transaction or rollback.
+Enabled with `checkpoints: true`. Native OpenCode tools and permissions remain
+authoritative. Checkpoint notes and operation observations are best-effort
+enhancements, not prerequisites for doing work.
 
-## Integration
+## Local runtime state
 
-Call `await installCheckpoints(ctx)` independently of the evidence feature in
-the plugin's server setup. It registers nothing unless
-`ctx.options.checkpoints === true`. Keep the returned controller and call its
-`dispose()` from the plugin cleanup. Multiple location controllers coordinate in
-the same server process. This module does not change native tools, permissions,
-package configuration or GUI registrations.
+`plugin/checkpoint.ts` stores JSON through OpenCode's native `ctx.storage` API,
+in the plugin-scoped key **`checkpoints/v1`**. This is local OpenCode server data,
+not a file in the project and not the evidence/model directory. Location-specific
+plugin instances share this storage namespace. The host chooses the database
+location (normally below its XDG data directory); the plugin does not manage or
+directly edit the database. Remote servers keep this state on the remote server.
 
-```ts
-const checkpoints = await installCheckpoints(ctx)
-// Include this in the enclosing plugin cleanup:
-await checkpoints?.dispose()
+Entries are keyed by native session ID. Notes include objective, progress, next
+step, decisions and relative paths. The objective **can change** when the user
+steers the task. Missing notes never block tools, restricted agents or final
+summaries. Context only asks agents to maintain notes when the tool is available.
+Do not store secrets, source contents, raw tool payloads or private reasoning.
+
+Observed calls record IDs, tool names, timestamps and outcomes, not arguments or
+results. Code Mode reuses its outer `execute` ID for nested tools: only the outer
+envelope is journaled. A completed envelope is not proof every nested call worked.
+Call IDs are correlation metadata, not an exactly-once execution mechanism.
+
+After interruption/reload, orphaned pending calls become `unknown`. Unknowns
+**warn, never automatically pause, reject tools, demand prose, or replay work**.
+An error can also have partial effects. Inspect the workspace/external system as
+needed before deciding the next action.
+
+## Explicit Pause and Resume
+
+- `/enhance-pause` persists an explicit pause before requesting native interruption
+  of this session and discovered descendants. A failed storage write reports
+  failure, not a successful durable Pause.
+- `/enhance-resume` explicitly resumes this session without requiring an essay or
+  acknowledgment checkbox. The command obtains a fresh revision; GUI/RPC clients
+  submit `{sessionID, revision}` to avoid stale-target/racing mutations.
+- Resume clears only the selected session's pause flag. Independently paused
+  children stay paused; a child cannot override a paused ancestor. Active Pause
+  interruption must finish before Resume. No operation is replayed.
+- `/enhance-status` shows scoped notes, observations and warnings. State is
+  `running`, `paused`, or `degraded`. `running` means the gate is open, not that
+  work is active or all effects are known.
+- `/enhance-forget confirm` deletes notes/history for this session tree. Resume
+  explicit pauses first. Uncertain diagnostic history is no longer undeletable.
+
+Only an explicit pause gates attributed agent tools and session prompt/context.
+Ordinary “continue” messages do not silently unpause a user pause. There is **no
+shell-creation hook or cross-session shell barrier**. Manual native shells,
+external jobs and noncooperative processes are outside checkpoint pause coverage.
+The native Stop button and all native permissions remain unchanged.
+
+## Degradation and retention
+
+Read/write failures, corrupt/missing bookkeeping and capacity limits do not become
+new native-tool denials. They produce a generic warning in logs, model context
+and status; GUI status marks degraded bookkeeping. Existing explicit pauses that
+the controller previously observed remain effective from its cached state where
+attribution is available. Corrupt/missing state is not silently overwritten.
+Explicit Pause/Resume and checkpoint updates still report storage failure rather
+than falsely claiming success. Successful writes recover bookkeeping without a
+required plugin reload. Unavailable ancestry/host storage cannot establish durable
+pause guarantees; this is not a substitute for native lifecycle controls.
+
+Diagnostic history is bounded to 256 sessions and 256 observations. Unpaused leaf
+sessions can be evicted; journal entries can be evicted even when uncertain.
+Explicit pause entries are not evicted automatically. At capacity where safe note
+retention is unavailable, observation degrades rather than blocking native work.
+This is bounded task memory, **not a complete forensic/transaction log**.
+
+## Share a task with another user or session
+
+Pause flags and runtime observations are machine/session-local. Portable project
+handoffs deliberately contain **only task notes**, not session IDs, local absolute
+paths, permissions, pause flags, instructions, raw execution history or a claim
+that work completed.
+
+1. Save current notes with `open_enhance_checkpoint`.
+2. Call `open_enhance_handoff` with `{"action":"export"}`.
+3. Save the returned JSON with native permission-checked file tools as
+   **`.opencode/handoffs/<task>.json`**. Review for sensitive information, then
+   commit/share it with the project. Exports do not silently write or commit files.
+4. Another user/session reads that file using native file permissions, then calls
+   `open_enhance_handoff` with `{"action":"import","handoff": <the JSON object>}`.
+5. The import validates the schema and copies the notes into the new session.
+   Inspect the actual working tree and tests before continuing. Nothing is
+   automatically executed or resumed, and no prior user's authority is inherited.
+
+Example file:
+
+```json
+{
+  "format": "open-enhance-handoff",
+  "version": 1,
+  "notes": {
+    "origin": "Fix document navigation",
+    "current": "Parser change implemented; integration test still needed",
+    "next": "Inspect the change and run the integration suite",
+    "decisions": ["Keep native permission checks"],
+    "paths": ["src/parser.ts", "tests/parser.test.ts"]
+  }
+}
 ```
 
-Controller methods (session IDs are strings):
+Notes are untrusted data. An imported “next” step is not permission or an
+instruction that overrides the new user's objective. Import rejects runtime or
+unknown fields rather than creating executable session state. The file is useful
+without the plugin too: a human or another agent can read it as ordinary JSON.
+There is no automatic project scan/import, no silent synchronization and no
+filesystem/process snapshot. Share actual commits/patches alongside the handoff.
 
-- `status(sessionID)` returns `state`, scoped concurrency `revision`, scoped
-  `sessions` and `journal`, `blockedBy`, `workspaceChanged`, and
-  `reconciliationRequired: true`. State is `running`, `paused` or `unknown`.
-  `running` means the checkpoint gate is open, not that a model/process is busy.
-  Notes/journal are limited to the requested session's ancestors and descendants;
-  unrelated session contents are excluded. Sibling session contents are excluded
-  when querying a child.
-- `pause(sessionID)` returns `{ status, interruptFailures }`. It persists the
-  ancestor gate **before** enumerating or interrupting the parent/descendants.
-  Pending observed calls become `unknown`. It requests native
-  `session.interrupt({ resume: false })` for the discovered tree. Failure to
-  enumerate/interrupt is reported and never reopens the gate. Descendants created
-  later inherit the ancestor gate through live `parentID` ancestry checks.
-- `resume(sessionID)` without a second argument returns
-  `state: "needs-reconciliation"`; it changes nothing and does not unblock.
-- `resume(sessionID, { revision, reconciliation, acknowledgeUnknown })` requires
-  the current status revision and a nonempty, bounded explicit review statement.
-  Unknown operations require `acknowledgeUnknown: true`. It refuses an active
-  pause interruption, pending calls, or a blocked ancestor (resume that ancestor
-  explicitly). It persists acknowledgment, clears only this session's pause flag,
-  and installs safe continuation instructions. Independently paused descendants
-  stay paused. It **does not enqueue a prompt or replay any operation**.
-- `dispose()` unregisters hooks/transforms. Previously captured checkpoint tool
-  executors also reject further use.
+## Limits and validation
 
-GUI/RPC integration must be supplied by the enclosing plugin. A session-ID-only
-resume RPC can call `resume(sessionID)` to request review, but cannot release the
-gate. An explicit confirmation form needs revision, reconciliation and a separate
-unknown-operation acknowledgment field in its RPC input. Never manufacture these
-values on the user's behalf. A GUI state badge can use `status.state` (or
-`pauseResult.status.state`). If integration enqueues a continuation after explicit
-resume, request reconciliation first, not repetition of the last operation.
+A directory-string hash detects a changed location string, not file edits or
+symlink/worktree identity. Pause cannot freeze arbitrary processes, guarantee
+cancellation, undo effects, or establish safe-to-close status. A prior hard VM
+power-cut test lost a recent native storage write; sudden power-loss durability
+is not promised. Closing the lid does not automatically Pause.
 
-## Commands
-
-- `/enhance-pause`: persist the pause gate, then request native interruptions.
-- `/enhance-forget confirm`: explicitly delete settled notes/journal for this
-  session tree. Paused, pending and unacknowledged unknown work cannot be forgotten.
-  A later task must initialize new notes. This is not forensic erasure of native
-  conversation history or underlying database pages.
-- `/enhance-status`: put the scoped structured status in a keyed session context
-  entry. This is not a dedicated interactive status UI.
-- `/enhance-resume`: without arguments, only publish a reconciliation request.
-  To release a gate, pass JSON as command text, for example:
-
-  ```text
-  /enhance-resume {"revision":12,"reconciliation":"Reviewed workspace changes and external effects using authorized tools; unknown operation must not be retried","acknowledgeUnknown":true}
-  ```
-
-An ordinary message, including “resume” or “continue”, never unpauses a session.
-Paused prompt/context and tool hooks reject execution. Read/grep/glob are **not**
-exempt from the pause gate: review must occur outside that paused session using
-appropriately authorized tools or external human inspection. Do not bypass native
-permissions. Acknowledgment is a human decision to continue with uncertainty, not
-proof that an unknown operation finished or that rerunning it is safe.
-
-## Task notes and journal
-
-Context instructions ask the agent to maintain `open_enhance_checkpoint` at task
-start and meaningful boundaries. Origin, current and next are each limited to
-1,000 characters; decisions to 12 strings of 300 characters; paths to 32
-workspace-relative strings of 300 characters. Paths reject absolute paths, `..`,
-empty components and backslashes. Origin is immutable after first set. No
-chain-of-thought, source contents, secrets, raw prompts, tool arguments or results
-belong in notes. These are untrusted agent summaries, not verified task history.
-
-Until nonempty origin/current/next are saved, **all other tool dispatch is
-rejected**, including native read-only tools. The checkpoint tool itself remains
-available to initialize notes. This avoids pretending to have captured the task
-when the agent never calls the maintenance tool. There is no automatic raw-prompt
-capture or claim of a complete transcript/checkpoint of arbitrary internal state.
-Checkpoint freshness at later meaningful boundaries remains agent-maintained.
-
-Restricted agents must be allowed to call `open_enhance_checkpoint` under native
-tool permissions. A broad deny can hide that maintenance tool (for example in a
-read-only custom agent), making initialization impossible. The context hook
-reports an actionable error before model dispatch when the tool is absent and
-notes are not initialized, rather than inducing repeated rejected tool calls.
-The plugin never adds permission grants. If desired, explicitly append a native
-agent rule `{ "action": "open_enhance_checkpoint", "resource": "*", "effect": "allow" }`
-in your configuration. Existing notes still permit native tool-free final
-summaries when an agent reaches its step limit.
-
-The public `execute.before` hook persists call/session/tool identifiers and a
-`pending` outcome before dispatch, without inspecting/persisting arguments.
-`execute.after` records observed `completed` or `error` and settlement time,
-without persisting output/errors. Started/settled timestamps are local Unix
-milliseconds, not a trustworthy external ordering/transaction log. An error can
-still have partial side effects. Calls pending when the plugin loads become
-`unknown` and hold their session/descendants until explicit review. No durable
-run identity is needed to assume uncertainty conservatively on every load;
-plugin reload during live work also classifies those pending calls as unknown.
-
-The gate and checkpoint executor read durable state on every invocation and
-resolve live ancestry, rather than capturing an old permission/executor snapshot.
-All location instances serialize through a process-wide plugin queue because
-OpenCode's location-specific storage wrappers share the plugin KV namespace.
-Live observed calls are tracked across instances so loading another project does
-not falsely classify those calls as crashes. Interrupted tools
-can finish their after hook without deadlocking interruption. This is not
-cross-process transactional storage: the host must provide one server writer and durable
-`ctx.storage.set` behavior. Removing the opt-in plugin removes its enforcement.
-
-Native storage is not a sudden-power-loss-safe external journal. OpenCode 2.2.6
-uses SQLite WAL with `synchronous=NORMAL`. A test cutting VM power without an OS
-shutdown recovered a pending tool as unknown but lost a recent Pause write in a
-separate control session. The plugin does not change the host database pragmas.
-Process restart, orderly reboot, VM suspension and unflushed power loss are
-different failure modes; do not claim the last is guaranteed. Closing the lid
-also does not automatically Pause: explicitly Pause and review before Resume.
-
-## Reconciliation and safety limits
-
-### Unattributed native shells
-
-The 2.2.6 `shell.create.before` hook exposes command/cwd/environment but **no
-session or call identity**. Direct native/manual shell execution does not pass
-through the agent's tool-dispatch journal. Live Desktop acceptance exposed that
-this path could bypass a session-only pause gate.
-
-The plugin therefore checks durable state again at shell creation and blocks
-**all new shells in its shared plugin namespace** while any session is paused,
-has an unacknowledged unknown outcome, or has an orphaned pending call. This can
-also block shell tools in unrelated sessions/projects while those pauses remain.
-It never guesses attribution from command text, cwd, timing or a reusable proof.
-Manual/native shells outside tool dispatch are not claimed to be journaled or
-checkpoint-note initialized. Already running shells are not process snapshots
-and may survive interruption. Resume paused work before deleting its native
-session; unresolved retained history intentionally fails closed. Disabling the
-feature removes this enforcement rather than silently resolving uncertainty.
-
-Unit, actual SDK cross-location/descendant, and isolated Desktop-service tests
-cover this barrier. Native tools and permission rules are not replaced; the
-broader shell denial is an explicit consequence of opting into checkpoints.
-
-Only a SHA-256 fingerprint of the session workspace directory string is recorded.
-`workspaceChanged` detects a changed directory string, not edits, symlink target
-changes, worktree identity, or source-file contents. This module deliberately
-performs **no filesystem reads or indexing**: portable public hooks do not
-guarantee race-free, per-component no-follow, permission-checked reads for all
-arbitrary tool paths. Declared paths are metadata, not verified file hashes.
-
-Consequently every resume requires explicit reconciliation of moved workspaces,
-edits to declared/touched paths, and external effects. Use native permission-
-checked tools to verify files; do not infer “unchanged” from the directory hash.
-The review statement is validated but not retained (to avoid storing another
-freeform user prompt). It is not automatically verified. No unknown operation is
-automatically rerun, even after acknowledgment. Native interruption may not stop
-noncooperative processes, network requests, terminals or background work. Already
-admitted operations may continue, and new descendants can race enumeration; the
-  durable ancestor gate prevents subsequent observed dispatch, not arbitrary
-  operating-system activity. Completed observations after a pause can settle an
-  unknown journal entry but do not clear the pause flag.
-
-State uses the host's plugin-scoped `ctx.storage` under `checkpoints/v1`, not
-committed reports or fixtures. At most 256 session note records and 256 journal
-records are retained. Settled/acknowledged journal records are evicted oldest-first
-when needed; pending/unacknowledged unknown records are never automatically
-evicted. Session capacity exhaustion fails closed and needs explicit future
-maintenance/export support; no automatic pruning of pause ancestry exists.
-There is no age-based deletion or public erase API yet. Notes and relative paths
-can themselves be sensitive: users/agents must not put secrets in them.
-
-Storage is strictly decoded, including limits, identifiers, timestamps, duplicate
-records and unexpected fields. Read errors, malformed state, missing state after
-initialization, and write errors reject tool dispatch. A write failure latches
-this controller closed until reload. Missing storage at a new installation is
-indistinguishable from deliberate deletion; do not delete host plugin storage as
-a way to recover paused work. This implementation cannot guarantee recovery when
-the storage provider loses acknowledged writes or when hooks are bypassed.
-
-## Focused validation
-
-```sh
-pixi run --locked node --import tsx --test plugin/checkpoint.test.ts
-```
-
-Tests use synthetic sessions and in-memory storage, covering crash-during-tool,
-concurrent dispatch, pause persistence failure, interruption failures, child
-ancestry, storage/schema failures, explicit resume and ordinary-message rejection,
-captured executors, task initialization and scoped status privacy. They do not
-establish live-server interruption behavior, cross-process atomicity, native hook
-coverage, complete external-effect recovery, or release readiness.
+`pixi run --locked test` covers nonblocking failures/uncertainty, mutable objectives,
+Code Mode IDs, explicit pause trees, revision-only Resume, subset permission
+checks, and portable-note round trips. SDK/CLI acceptance uses synthetic sessions
+and controlled providers. Older Desktop/VM receipts describe the earlier blocking
+implementation and do not certify this redesign.

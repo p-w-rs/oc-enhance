@@ -19,6 +19,20 @@ MAX_FILES = 5000
 MAX_SOURCE_BYTES = 96 * 1024 * 1024
 
 
+def settings(value: dict | None = None) -> dict:
+    value = {} if value is None else value
+    allowed = {"includeHidden", "includeGenerated", "includeSensitiveNames", "maxFiles", "maxSourceBytes"}
+    if not isinstance(value, dict) or value.keys() - allowed:
+        raise PolicyError("Unknown evidence policy setting")
+    for key in ("includeHidden", "includeGenerated", "includeSensitiveNames"):
+        if key in value and not isinstance(value[key], bool):
+            raise PolicyError("Evidence inclusion settings must be booleans")
+    for key, ceiling in (("maxFiles", MAX_FILES), ("maxSourceBytes", MAX_SOURCE_BYTES)):
+        if key in value and (type(value[key]) is not int or not 1 <= value[key] <= ceiling):
+            raise PolicyError("Evidence budget exceeds supported bounds")
+    return value
+
+
 class PolicyError(ValueError):
     pass
 
@@ -44,17 +58,22 @@ def secure_open_directory(path: Path, *, create: bool = False) -> int:
         raise
 
 
-def eligible(relative: Path) -> bool:
+def eligible(relative: Path, options: dict | None = None) -> bool:
+    options = settings(options)
     if relative.is_absolute() or ".." in relative.parts:
         return False
-    if any(part.startswith(".") or part.lower() in EXCLUDED_DIRS or SENSITIVE.search(part) for part in relative.parts):
+    if any(part.lower() in {".git", ".local", ".pixi"} for part in relative.parts):
+        return False
+    if any((part.startswith(".") and not options.get("includeHidden")) or
+           (part.lower() in EXCLUDED_DIRS and not options.get("includeGenerated")) or
+           (SENSITIVE.search(part) and not options.get("includeSensitiveNames")) for part in relative.parts):
         return False
     return relative.suffix.lower() in TEXT_SUFFIXES | DOCUMENT_SUFFIXES or relative.name in {"Dockerfile", "Makefile", "CMakeLists.txt"}
 
 
-def resolve_source(root: Path, relative: str) -> Path:
+def resolve_source(root: Path, relative: str, options: dict | None = None) -> Path:
     rel = Path(relative)
-    if not eligible(rel):
+    if not eligible(rel, options):
         raise PolicyError("Source is excluded by the local evidence policy")
     current = root
     for part in rel.parts:
@@ -67,10 +86,10 @@ def resolve_source(root: Path, relative: str) -> Path:
     return resolved
 
 
-def read_source(root: Path, relative: str) -> bytes:
+def read_source(root: Path, relative: str, options: dict | None = None) -> bytes:
     """Walk with openat/O_NOFOLLOW: replacing a checked path cannot follow a symlink."""
     rel = Path(relative)
-    if not eligible(rel):
+    if not eligible(rel, options):
         raise PolicyError("Source is excluded by the local evidence policy")
     directory = secure_open_directory(root)
     try:
@@ -91,10 +110,17 @@ def read_source(root: Path, relative: str) -> bytes:
         os.close(directory)
 
 
-def discover(root: Path) -> tuple[list[Path], dict]:
+def discover(root: Path, options: dict | None = None, scope: str = "", selected_paths: set[str] | None = None) -> tuple[list[Path], dict]:
+    options = settings(options)
+    relative_scope = Path(scope)
+    if relative_scope.is_absolute() or ".." in relative_scope.parts:
+        raise PolicyError("Discovery scope must be workspace-relative")
+    scoped = root / relative_scope
+    if scoped.resolve(strict=True) != scoped or not scoped.is_dir():
+        raise PolicyError("Discovery scope must be a canonical directory within the workspace")
     if not root.is_absolute() or not root.is_dir():
         raise PolicyError("An existing absolute workspace root is required")
-    descriptor = secure_open_directory(root)
+    descriptor = secure_open_directory(scoped)
     try:
         rg = shutil.which("rg")
         if not rg:
@@ -103,7 +129,7 @@ def discover(root: Path) -> tuple[list[Path], dict]:
         # fresh child fchdirs the pinned descriptor, then execs rg in-place.
         # Unlike preexec_fn this does not run Python after fork in a threaded parent.
         launcher = "import os,sys;os.fchdir(int(sys.argv[1]));os.execv(sys.argv[2],sys.argv[2:])"
-        proc = subprocess.run(pixi_python("-c", launcher, str(descriptor), rg, "--no-config", "--files", "--null", "--no-require-git", "--no-ignore-dot", "--no-ignore-global", "--", "."), cwd="/", pass_fds=(descriptor,), capture_output=True, timeout=20)
+        proc = subprocess.run(pixi_python("-c", launcher, str(descriptor), rg, "--no-config", "--files", "--null", "--no-require-git", "--no-ignore-dot", "--no-ignore-global", *(["--hidden"] if options.get("includeHidden") else []), "--", "."), cwd="/", pass_fds=(descriptor,), capture_output=True, timeout=20)
     finally:
         os.close(descriptor)
     if proc.returncode not in (0, 1):
@@ -111,15 +137,18 @@ def discover(root: Path) -> tuple[list[Path], dict]:
     files: list[Path] = []
     excluded = 0
     size = 0
+    truncated = False
     for item in sorted(proc.stdout.split(b"\0")):
         if not item:
             continue
-        rel = Path(item.decode("utf-8", errors="strict"))
-        if not eligible(rel):
+        rel = relative_scope / Path(item.decode("utf-8", errors="strict"))
+        if selected_paths is not None and str(rel) not in selected_paths:
+            continue
+        if not eligible(rel, options):
             excluded += 1
             continue
         try:
-            source = resolve_source(root, str(rel))
+            source = resolve_source(root, str(rel), options)
             count = source.stat().st_size
         except (OSError, PolicyError):
             excluded += 1
@@ -128,8 +157,10 @@ def discover(root: Path) -> tuple[list[Path], dict]:
         if count > limit:
             excluded += 1
             continue
+        if selected_paths is None and (len(files) >= options.get("maxFiles", MAX_FILES) or size + count > options.get("maxSourceBytes", MAX_SOURCE_BYTES)):
+            truncated = True
+            excluded += 1
+            continue
         size += count
         files.append(rel)
-        if len(files) > MAX_FILES or size > MAX_SOURCE_BYTES:
-            raise PolicyError("Workspace exceeds the bounded indexing budget; select a narrower folder")
-    return files, {"eligible_files": len(files), "excluded_files": excluded, "source_bytes": size}
+    return files, {"eligible_files": len(files), "excluded_files": excluded, "source_bytes": size, "truncated": truncated, "scope": scope, "ignore_policy": "local_gitignore_only"}

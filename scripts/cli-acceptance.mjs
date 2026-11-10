@@ -26,8 +26,8 @@ const env = {
 await writeFile(path.join(workspace, "pixi.toml"), '[workspace]\nname="cli-acceptance"\nchannels=[]\nplatforms=["osx-arm64"]\n[tasks]\nprobe="pwd"\n')
 execFileSync(pixi, ["lock"], { cwd: workspace, env, stdio: "pipe" })
 const calls = [
-  { name: "open_enhance_checkpoint", input: { origin: "Synthetic CLI acceptance", current: "Ready", next: "Check policy and Pixi task", decisions: [], paths: [] } },
-  { name: "shell", input: { command: 'python3 -c \'open("forbidden-marker","w").write("bad")\'', description: "Synthetic forbidden Python" } },
+  { name: "shell", input: { command: '(pwd > native-output) && cat < native-output', description: "Native shell works before checkpoint initialization" } },
+  { name: "open_enhance_checkpoint", input: { origin: "Synthetic CLI acceptance", current: "Ready", next: "Check native shell and Pixi task", decisions: [], paths: [] } },
   { name: "shell", input: { command: "pixi run --locked probe", description: "Synthetic Pixi pwd task" } },
 ]
 let requests = 0, modelRequests = 0
@@ -54,7 +54,7 @@ await new Promise(resolve => server.listen(0, "127.0.0.1", resolve))
 const port = server.address().port
 await writeFile(path.join(configuration, "opencode.json"), JSON.stringify({
   $schema: "https://opencode.ai/config.json", model: "probe/probe",
-  plugins: [{ package: repository, options: { pixiGuard: true, checkpoints: true, evidence: false, pixiExecutable: pixi } }],
+  plugins: [{ package: repository, options: { checkpoints: true, evidence: false, pixiExecutable: pixi } }],
   permissions: [{ action: "*", resource: "*", effect: "allow" }],
   providers: { probe: {
     package: "@opencode/ai/providers/openai-compatible",
@@ -74,14 +74,14 @@ const timer = setTimeout(() => { timedOut = true; stop() }, 60000)
 let code
 try { code = await new Promise((resolve, reject) => { child.on("error", reject); child.on("close", resolve) }) }
 finally { clearTimeout(timer); server.close() }
-let forbiddenMarker = false
-try { await access(path.join(workspace, "forbidden-marker")); forbiddenMarker = true } catch {}
+let nativeOutput = false
+try { await access(path.join(workspace, "native-output")); nativeOutput = true } catch {}
 const result = {
   schema: 1, fingerprint: releaseFingerprint(), test: "actual-project-cli-private-server",
-  code, timedOut, outputOverflow, requests, modelRequests, scriptedCallsRemaining: calls.length, forbiddenMarker,
-  completed: stdout.includes("LIVE_CLI_PROBE_COMPLETE"), policyRefusal: stdout.includes("open-enhance Pixi policy"),
+  code, timedOut, outputOverflow, requests, modelRequests, scriptedCallsRemaining: calls.length, nativeOutput,
+  completed: stdout.includes("LIVE_CLI_PROBE_COMPLETE"),
   provider: "local-scripted-SSE-not-a-real-LLM",
-  passed: code === 0 && !timedOut && !outputOverflow && calls.length === 0 && !forbiddenMarker && stdout.includes("LIVE_CLI_PROBE_COMPLETE") && stdout.includes("open-enhance Pixi policy"),
+  passed: code === 0 && !timedOut && !outputOverflow && calls.length === 0 && nativeOutput && stdout.includes("LIVE_CLI_PROBE_COMPLETE") && !stdout.includes("open-enhance Pixi policy"),
   note: "Actual native CLI/plugin integration with a controlled local provider; not real-LLM quality, desktop rendering, or binary dependency remediation.",
 }
 await mkdir(path.join(repository, ".local/release"), { recursive: true, mode: 0o700 })

@@ -43,8 +43,9 @@ def test_discovery_respects_file_and_total_budgets(workspace, monkeypatch):
     assert [str(path) for path in files] == ["small.txt"]
     assert stats["source_bytes"] == 3
     monkeypatch.setattr(policy, "MAX_SOURCE_BYTES", 2)
-    with pytest.raises(policy.PolicyError, match="budget"):
-        policy.discover(workspace)
+    files, stats = policy.discover(workspace)
+    assert files == []
+    assert stats["truncated"] is True
 
 
 def test_discovery_ignores_user_rg_configuration_and_handles_ragged_paths(workspace, tmp_path, monkeypatch):

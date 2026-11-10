@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises"
 import path from "node:path"
 import { createHash } from "node:crypto"
 import { parse } from "jsonc-parser"
-import { configure, findHost, verifySnapshot } from "../scripts/install.mjs"
+import { configure, featureOptions, findHost, verifySnapshot } from "../scripts/install.mjs"
 
 test("installer preserves JSONC, unrelated settings and existing feature options and is idempotent", () => {
   const source = '{\n// keep this comment\n"model":"synthetic/model",\n"plugins":["another-plugin",{"package":"/data/releases/old","options":{"evidence":true,"dataDirectory":"/synthetic/data"}}],\n}\n'
@@ -28,6 +28,15 @@ test("installer handles fresh config, owned duplicates and uninstall without sel
   for (const invalid of ['{bad', '[]', '{"plugins":{}}', '{"plugins":[{"package":"/data/releases/a","options":[]}]}']) {
     assert.throws(() => configure(invalid, '/data/releases/new', '/data/releases'))
   }
+})
+
+test("installer explicitly disables features and removes obsolete global guard configuration", () => {
+  const source = JSON.stringify({ plugins: [{ package: "/data/releases/old", options: { pixiGuard: true, evidence: true, checkpoints: true } }] })
+  const options = featureOptions(["--no-evidence", "--checkpoints"])
+  assert.deepEqual(options, { evidence: false, checkpoints: true })
+  const config = parse(configure(source, "/data/releases/new", "/data/releases", options))
+  assert.deepEqual(config.plugins[0].options, { evidence: false, checkpoints: true })
+  assert.throws(() => featureOptions(["--evidence", "--no-evidence"]), /not both/)
 })
 
 test("installer discovers compatible Desktop even when PATH CLI is old, rejecting V1 and malformed versions", () => {

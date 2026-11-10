@@ -6,7 +6,6 @@ import os
 import platform
 import shutil
 import sys
-import sys
 from pathlib import Path
 
 from .evidence import read_evidence
@@ -34,15 +33,15 @@ def dispatch(request: dict) -> dict:
         raise ValueError("An absolute session workspace root is required")
     root = Path(raw).absolute()
     if operation == "inventory":
-        paths, coverage = discover(root)
+        paths, coverage = discover(root, request.get("policy"), request.get("scope", ""))
         return {"paths": [str(path) for path in paths], "coverage": coverage}
     if operation == "search":
         allowed = request.get("allowed_paths")
         if allowed is not None and (not isinstance(allowed, list) or len(allowed) > 5000 or not all(isinstance(path, str) for path in allowed)):
             raise ValueError("Invalid authorized source inventory")
-        return search(root, request["query"], request.get("mode", "semantic"), request.get("limit", 5), allowed)
+        return search(root, request["query"], request.get("mode", "semantic"), request.get("limit", 5), allowed, request.get("policy"), request.get("scope", ""))
     if operation == "read":
-        return read_evidence(root, request["evidence"])
+        return read_evidence(root, request["evidence"], options=request.get("policy"))
     raise ValueError("Unknown operation")
 
 

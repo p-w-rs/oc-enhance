@@ -45,14 +45,20 @@ try {
     const {createPlugin} = await import('./plugin/index.ts');
     let context;
     const adapter = createPlugin();
-    const host = await OpenCode.create({database:{path:':memory:'},config:{directory:${JSON.stringify(path.join(home, "config"))},project:false,claude:false,content:'{}'},models:{fetch:false,snapshot:false},fs:{filewatcher:false,fff:false},fetch:globalThis.fetch,plugins:[{id:adapter.id,setup:async ctx=>{context=ctx;return adapter.setup({...ctx,options:{evidence:true,pixiGuard:true,checkpoints:true,pixiExecutable:${JSON.stringify(pixi)},dataDirectory:${JSON.stringify(path.join(stage, "evidence"))}}})}}]});
+    const host = await OpenCode.create({database:{path:':memory:'},config:{directory:${JSON.stringify(path.join(home, "config"))},project:false,claude:false,content:'{}'},models:{fetch:false,snapshot:false},fs:{filewatcher:false,fff:false},fetch:globalThis.fetch,plugins:[{id:adapter.id,setup:async ctx=>{context=ctx;return adapter.setup({...ctx,options:{evidence:true,checkpoints:true,pixiExecutable:${JSON.stringify(pixi)},dataDirectory:${JSON.stringify(path.join(stage, "evidence"))}}})}}]});
     try {
       const session=await host.session.create({location:{directory:${JSON.stringify(workspace)}}});
       await host.session.update({sessionID:session.id,permissions:[{action:'read',resource:'*',effect:'allow'}]});
       await host.agent.list({location:{directory:${JSON.stringify(workspace)}}});
       const tools=await context.tool.list();
-      for (const name of ['read','grep','shell','open_enhance_checkpoint','open_enhance_search']) assert.ok(tools.some(t=>t.id===name),name);
+      for (const name of ['read','grep','shell','open_enhance_checkpoint','open_enhance_handoff','open_enhance_search']) assert.ok(tools.some(t=>t.id===name),name);
       const execution={sessionID:session.id,agent:'build',messageID:'package-smoke',id:'package-smoke',signal:new AbortController().signal,progress:async()=>{}};
+      const checkpoint=tools.find(t=>t.id==='open_enhance_checkpoint');
+      const notes={origin:'Packaged task',current:'Prepared',next:'Inspect',decisions:[],paths:[]};
+      await checkpoint.execute(notes,execution);
+      await checkpoint.execute({...notes,origin:'Updated objective'},execution);
+      const handoff=JSON.parse((await tools.find(t=>t.id==='open_enhance_handoff').execute({action:'export'},execution)).content);
+      assert.equal(handoff.notes.origin,'Updated objective');
       const result=JSON.parse((await tools.find(t=>t.id==='open_enhance_search').execute({query:'amber kestrel',mode:'lexical'},execution)).content);
       assert.ok(result.results.some(hit=>hit.evidence.path==='guide.md'));
       const commands=await context.command.list();

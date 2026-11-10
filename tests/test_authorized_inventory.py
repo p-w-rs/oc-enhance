@@ -26,16 +26,16 @@ def test_files_added_after_authorization_never_enter_index(workspace):
     (workspace / "unapproved.md").write_text("quarantine queue extra")
     result = dispatch({"operation": "search", "root": str(workspace), "query": "quarantine", "mode": "lexical", "allowed_paths": inventory["paths"]})
     assert [hit["evidence"]["path"] for hit in result["results"]] == ["approved.md"]
-    manifest = json.loads((search_module.workspace_home(workspace) / "manifest.json").read_text())
+    manifest = json.loads((search_module.workspace_home(workspace, search_module.selection_key(inventory["paths"])) / "manifest.json").read_text())
     assert set(manifest["sources"]) == {"approved.md"}
 
 
-def test_empty_authorization_removes_old_index_contents(workspace):
+def test_empty_authorization_uses_an_empty_isolated_index(workspace):
     (workspace / "guide.md").write_text("quarantine queue")
     assert search_module.search(workspace, "quarantine", "lexical")["results"]
     result = search_module.search(workspace, "quarantine", "lexical", allowed_paths=[])
     assert result["results"] == []
-    assert not list((search_module.workspace_home(workspace) / "mirror").iterdir())
+    assert not list((search_module.workspace_home(workspace, search_module.selection_key([])) / "mirror").iterdir())
 
 
 @pytest.mark.parametrize("allowed", ["guide.md", [1], [None]])

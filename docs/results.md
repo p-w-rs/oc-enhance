@@ -97,7 +97,9 @@ Raw reports, local case descriptions, source mirrors and model files remain in `
 
 ## 0.2.0 candidate: Pixi policy and durable pause
 
-The candidate adds independent `pixiGuard` and `checkpoints` options, a built desktop GUI entry, explicit Resume review, and typed server RPC. It does not change the owner's global configuration or publish a package.
+**Historical behavior below:** these results describe the earlier `pixiGuard` and blocking-checkpoint implementation, not the current redesign. The guard, mandatory notes, immutable objectives, uncertainty locks and prose Resume requirements have since been removed. See [current restriction review](restriction-review.md). Prior receipts do not certify current-source Desktop behavior.
+
+The earlier candidate added independent `pixiGuard` and `checkpoints` options, a built desktop GUI entry, explicit Resume review, and typed server RPC. That evaluation did not change the owner's global configuration or publish a package.
 
 - Direct Python commands, related tools, extensionless Python scripts and common wrappers are inspected before execution. Supported source inspections use attributed native read permissions. Authorized Pixi workspace/script preparation is allowed; ambiguous shell constructs fail closed. This is not an OS-wide process sandbox.
 - Plugin-owned Python now enters through Pixi too, including the evidence worker, document parser and descriptor-relative native-backend launchers.

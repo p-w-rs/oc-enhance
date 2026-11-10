@@ -33,6 +33,7 @@ export function configure(source, target, releases, options = {}, sourceRoot = r
   const existingOptions = typeof previous === "object" ? previous.options ?? {} : {}
   if (!existingOptions || typeof existingOptions !== "object" || Array.isArray(existingOptions)) throw new Error("Invalid existing plugin options")
   const entry = { ...(typeof previous === "object" ? previous : {}), package: target, options: { ...existingOptions, ...options } }
+  delete entry.options.pixiGuard // Removed globally; stale opt-ins must not resurrect it.
   const indices = plugins.flatMap((value, index) => owned(value) ? [index] : [])
   // Patch array entries rather than serializing the document: preserve JSONC comments.
   const format = { formattingOptions: { insertSpaces: true, tabSize: 2 } }
@@ -88,12 +89,23 @@ async function snapshot(releases, pixi, dataDirectory) {
   return directory
 }
 
+export function featureOptions(args) {
+  const options = {}
+  for (const feature of ["checkpoints", "evidence"]) {
+    if (args.includes(`--${feature}`) && args.includes(`--no-${feature}`)) throw new Error(`Choose enable or disable for ${feature}, not both`)
+    if (args.includes(`--${feature}`)) options[feature] = true
+    if (args.includes(`--no-${feature}`)) options[feature] = false
+  }
+  return options
+}
+
 export async function install(args = process.argv.slice(2)) {
-  const allowed = new Set(["--checkpoints", "--pixi-guard", "--evidence", "--uninstall", "--rollback"])
-  if (args.some(value => !allowed.has(value))) throw new Error("Usage: pixi run --locked install --checkpoints --pixi-guard --evidence | --rollback | --uninstall")
+  const allowed = new Set(["--checkpoints", "--no-checkpoints", "--evidence", "--no-evidence", "--uninstall", "--rollback"])
+  if (args.some(value => !allowed.has(value))) throw new Error("Usage: pixi run --locked install --[no-]checkpoints --[no-]evidence | --rollback | --uninstall. The --pixi-guard feature has been removed.")
+  const features = featureOptions(args)
   const uninstall = args.includes("--uninstall"), rollback = args.includes("--rollback")
   if ((uninstall || rollback) && args.length !== 1) throw new Error("Choose one installation operation")
-  if (!args.length) throw new Error("Choose features explicitly: --checkpoints, --pixi-guard, and/or --evidence")
+  if (!args.length) throw new Error("Choose features explicitly: --[no-]checkpoints and/or --[no-]evidence")
   const configDirectory = path.join(process.env.XDG_CONFIG_HOME || path.join(homedir(), ".config"), "opencode")
   const releases = path.join(process.env.XDG_DATA_HOME || path.join(homedir(), ".local/share"), "open-enhance/releases")
   await mkdir(configDirectory, { recursive: true, mode: 0o700 })
@@ -134,9 +146,7 @@ export async function install(args = process.argv.slice(2)) {
         if (dataDirectory !== undefined && (typeof dataDirectory !== "string" || !path.isAbsolute(dataDirectory))) throw new Error("Evidence data directory must be absolute")
         target = await snapshot(releases, pixi, dataDirectory)
         options = {
-          ...(args.includes("--checkpoints") ? { checkpoints: true } : {}),
-          ...(args.includes("--pixi-guard") ? { pixiGuard: true } : {}),
-          ...(args.includes("--evidence") ? { evidence: true } : {}),
+          ...features,
           pixiExecutable: pixi,
           ...(dataDirectory ? { dataDirectory } : {}),
         }

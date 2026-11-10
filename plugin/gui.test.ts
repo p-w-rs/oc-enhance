@@ -49,11 +49,10 @@ test("palette action resolves session at invocation and catches server errors", 
   assert.equal(toasts, 1)
 })
 
-test("resume requires explicit text and a valid revision; never manufactures acknowledgment", () => {
-  const valid = { revision: 4, reconciliation: "Verified workspace changes using native tools", acknowledgeUnknown: false }
-  assert.equal(resumeInput(valid).acknowledgeUnknown, false)
-  for (const invalid of [{ ...valid, revision: -1 }, { ...valid, revision: 1.5 }, { ...valid, reconciliation: " " }]) {
-    assert.throws(() => resumeInput(invalid), /Explicit reconciliation/)
+test("resume requires only a current revision, not prose or acknowledgment", () => {
+  assert.deepEqual(resumeInput({ revision: 4 }), { revision: 4 })
+  for (const invalid of [{ revision: -1 }, { revision: 1.5 }]) {
+    assert.throws(() => resumeInput(invalid), /current revision/)
   }
 })
 
@@ -62,15 +61,15 @@ test("raw durable responses retain revision and interruption failures are not sa
   assert.equal(checkpointView(status).state, "paused")
   assert.equal(checkpointView(status).revision, 7)
   assert.equal(checkpointView({ status, interruptFailures: ["child"] }).state, "paused with unresolved operations")
-  assert.equal(checkpointView({ ...status, journal: [{ outcome: "unknown", acknowledged: false }] }).state, "unknown")
+  assert.equal(checkpointView({ ...status, blockedBy: [], journal: [{ outcome: "unknown", acknowledged: false }] }).state, "running with uncertain outcomes")
 })
 
-test("resume sends captured revision and user acknowledgment only to the captured server", async () => {
+test("resume sends only captured revision to the captured server", async () => {
   const calls: unknown[] = []
   const session = { id: "captured", location: { directory: "/synthetic" }, server: { client: {
     rpc: () => ({ resume: async (...args: unknown[]) => { calls.push(args); return { state: "running" } } }),
   } } } as unknown as MountedSession
-  const input = { revision: 12, reconciliation: "Reviewed edits and unknown side effects", acknowledgeUnknown: false }
+  const input = { revision: 12 }
   await callCheckpoint(session, "resume", undefined, input)
   assert.deepEqual(calls, [[{ sessionID: "captured", ...input }, { signal: undefined, location: session.location }]])
 })

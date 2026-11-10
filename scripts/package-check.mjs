@@ -9,7 +9,7 @@ if (!names.includes("vendor/gitlab-ai-provider-6.23.1-open-enhance.1.tgz")) thro
 for (const name of names) {
   if (name.split("/").some(part => part.startsWith(".") || ["node_modules", "__pycache__", "tests"].includes(part)) || name.includes(".test.") || name.endsWith(".pyc")) throw new Error(`Unsafe package member: ${name}`)
 }
-for (const required of ["plugin/index.ts", "plugin/rpc.ts", "plugin/checkpoint.ts", "plugin/pixi-policy.ts", "dist/gui-experimental.cjs", "pixi.toml", "pixi.lock", "pyproject.toml", "models.lock.json", "npm-shrinkwrap.json", "src/open_enhance/cli.py", "src/open_enhance/document_worker.py"]) {
+for (const required of ["plugin/index.ts", "plugin/rpc.ts", "plugin/checkpoint.ts", "dist/gui-experimental.cjs", "pixi.toml", "pixi.lock", "pyproject.toml", "models.lock.json", "npm-shrinkwrap.json", "src/open_enhance/cli.py", "src/open_enhance/document_worker.py"]) {
   if (!names.includes(required)) throw new Error(`Missing package member: ${required}`)
 }
 mkdirSync(".local/release", { recursive: true, mode: 0o700 })

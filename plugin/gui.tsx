@@ -18,7 +18,7 @@ export default Plugin.define({
     if (ctx.options.checkpoints !== true) return
 
     const [views, setViews] = createSignal<Record<string, View>>({})
-    const [form, setForm] = createSignal<{ session: MountedSession; revision: number; reconciliation: string; acknowledgeUnknown: boolean; review: string }>()
+    const [form, setForm] = createSignal<{ session: MountedSession; revision: number; review: string }>()
     const versions = new Map<string, number>()
     const statusRequests = new Map<string, number>()
     let closeResume: (() => void) | undefined
@@ -66,7 +66,11 @@ export default Plugin.define({
         ctx.toast.show({ title: "Cannot open resume", description: "A current checkpoint revision is required. Retry after checking the server.", variant: "error" })
         return
       }
-      setForm({ session, revision: result.revision!, reconciliation: "", acknowledgeUnknown: false, review: JSON.stringify({ workspaceChanged: result.workspaceChanged, notes: result.sessions, operations: result.journal, blockedBy: result.blockedBy }, null, 2) })
+      if (result.state === "degraded") {
+        ctx.toast.show({ title: "Checkpoint storage unavailable", description: "Resume was not applied. Repair storage and retry; ordinary native work is not locked by bookkeeping failures.", variant: "error" })
+        return
+      }
+      setForm({ session, revision: result.revision!, review: JSON.stringify({ warnings: result.warnings, workspaceChanged: result.workspaceChanged, notes: result.sessions, operations: result.journal, blockedBy: result.blockedBy }, null, 2) })
       const handle = ctx.dialogs.open((dialog) => <ResumeReview close={dialog.close} />)
       closeResume = handle.close
     }
@@ -76,7 +80,7 @@ export default Plugin.define({
       if (!captured || ctx.sessions.current()?.key !== captured.session.key) return
       let input: ResumeInput
       try { input = resumeInput(captured) } catch {
-        ctx.toast.show({ title: "Reconciliation required", description: "Enter a non-empty reconciliation description (up to 1000 characters).", variant: "error" })
+        ctx.toast.show({ title: "Current revision required", description: "Reopen Resume to refresh the session state.", variant: "error" })
         return
       }
       const result = await run(captured.session, "resume", input)
@@ -104,9 +108,9 @@ export default Plugin.define({
       show: (input) => ({
         label: `Checkpoint: ${label(input.session)}`,
         title: "Checkpoint gate; not a safe-to-close guarantee",
-        tone: !input.session.server.connected || view(input.session).state === "error" ? "danger" : undefined,
+        tone: !input.session.server.connected || ["error", "degraded"].includes(view(input.session).state) ? "danger" : undefined,
         rows: [
-          { id: "status", label: `Status: ${label(input.session)}`, detail: "Paused/unknown checkpoints also block new shells across this plugin namespace" },
+          { id: "status", label: `Status: ${label(input.session)}`, detail: "Pause covers this session tree's agent tools, not manual shells or unrelated sessions" },
           ...(disabled(input.session) ? [] : [
             { id: "pause", label: "Pause at checkpoint", run: () => { void run(input.session, "pause") } },
             { id: "resume", label: "Review and resume…", run: () => { void openResume(input.session) } },
@@ -174,15 +178,9 @@ export default Plugin.define({
       return <ctx.ui.Dialog title="Review checkpoint before resuming">
         <Show when={form()}>{(current) =>
           <form style={{ display: "flex", "flex-direction": "column", gap: "12px", padding: "16px", "max-height": "70vh", "overflow": "auto" }} aria-label="Explicit checkpoint resume" onSubmit={(event) => { event.preventDefault(); void submitResume() }}>
-            <span>Revision {current().revision}. Reconcile workspace changes and external effects first.</span>
+            <span>Resume this session at revision {current().revision}. Interrupted operations may have uncertain outcomes; they will not be automatically replayed. Independently paused children remain paused.</span>
             <details><summary>Task checkpoint and observed operations</summary><pre style={{ "max-height": "240px", "overflow": "auto", "white-space": "pre-wrap" }}>{current().review}</pre></details>
-            <ctx.ui.TextInput label="Reconciliation description" placeholder="Describe what you verified before continuing"
-              value={current().reconciliation} disabled={unavailable()} autofocus
-              onInput={(value) => setForm((previous) => previous && { ...previous, reconciliation: value.slice(0, 1000) })} />
-            <ctx.ui.Switch label="I acknowledge uncertain side effects. This does NOT mean they are safe to retry."
-              checked={current().acknowledgeUnknown} disabled={unavailable()}
-              onChange={(checked) => setForm((previous) => previous && { ...previous, acknowledgeUnknown: checked })} />
-            <ctx.ui.Button type="submit" variant="contrast" disabled={unavailable() || !current().reconciliation.trim()}>Continue</ctx.ui.Button>
+            <ctx.ui.Button type="submit" variant="contrast" disabled={unavailable()}>Resume</ctx.ui.Button>
             <ctx.ui.Button type="button" disabled={unavailable()} onClick={props.close}>Cancel</ctx.ui.Button>
           </form>
         }</Show>

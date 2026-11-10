@@ -7,12 +7,14 @@ from .extract import digest, extract
 from .policy import PolicyError, discover, read_source
 
 
-def read_evidence(root: Path, evidence: dict, *, eligible_paths: set[str] | None = None) -> dict:
-    eligible_paths = eligible_paths if eligible_paths is not None else {str(path) for path in discover(root)[0]}
+def read_evidence(root: Path, evidence: dict, *, eligible_paths: set[str] | None = None, options: dict | None = None) -> dict:
+    # Do not make a single-source read depend on whole-workspace budget limits.
+    source_scope = str(Path(evidence["path"]).parent)
+    eligible_paths = eligible_paths if eligible_paths is not None else {str(path) for path in discover(root, options, source_scope, selected_paths={evidence["path"]})[0]}
     if evidence["path"] not in eligible_paths:
         raise PolicyError("Source is no longer eligible under the current discovery/ignore policy")
     source = Path(evidence["path"])
-    data = read_source(root, evidence["path"])
+    data = read_source(root, evidence["path"], options)
     if digest(data) != evidence["sha256"]:
         return {"status": "stale", "evidence": evidence, "message": "Source changed; search again before citing it"}
     locator = evidence["locator"]
