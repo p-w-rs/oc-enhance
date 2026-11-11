@@ -6,11 +6,13 @@ macOS and Linux; OpenCode 2.2.6+ and Pixi.
 
 | Feature | What it adds |
 |---|---|
-| **Task notes, Pause and Resume** | Agents keep short notes (goal, done so far, next step, decisions, files) that they see on every turn. **Pause** above the message box stops the agent and its subagents and keeps them stopped; **Resume** continues from the notes. Notes survive restarts and can be handed to a colleague as a file. |
+| **Task notes, Pause and Resume** | Agents keep short notes (goal, done so far, next step, decisions, files) that they see on every turn and are reminded to keep current. **Pause** above the message box stops the agent, its subagents and the background commands it started, saves a notes checkpoint, and keeps everything stopped; **Resume** continues from the notes. Notes survive restarts and can be handed to a colleague as a file. |
+| **Reminders** | `reminder`: agents set timers for themselves ("in 40 min, check the training run") and end their turn; they are woken with their message when it is due, even after a restart, instead of sleeping in the shell or forgetting. A paused session gets its reminders on Resume. Listed under the Pause button, where you can cancel them. |
 | **Documents** | `read_document`: Word (.docx), Excel (.xlsx), PowerPoint (.pptx) and PDF as text, by paragraph range, sheet, slide or page. OpenCode's own reader handles text, code, images and PDFs, but not Office files. |
 | **Project search** | `search_project`: find where something is described or implemented when you don't know the exact words, across code and documents; one passage per file with its location. Keyword ranking works out of the box; meaning-based ranking after a one-time download. |
 | **Shared terminals** | `terminal_list`, `terminal_read`, `terminal_write`, `terminal_open`: agents use the terminals in the Review pane with you (Desktop). See [shared terminals](docs/terminals.md). |
-| **Pixi know-how** | A `pixi` skill and a one-line reminder: Python only through Pixi (`pixi run --script` for single files, a Pixi workspace for projects), Pixi-managed toolchains preferred for other languages. Guidance only; nothing is blocked. |
+
+Since 1.4.0, Pixi know-how is its own plugin, [oc-pixi](https://github.com/p-w-rs/oc-pixi), so you can install it or leave it out.
 
 ## Install
 
@@ -39,14 +41,17 @@ Updating: `git pull && pixi run --locked install`. Settings, indexes and the sea
 
 - Agents call `save_task_notes` when they start multi-step work and after milestones. Until they do, the user's first
   request is kept as the goal. The notes go into the model's context on every turn, so after a pause, a restart, a
-  compaction or a long break the agent knows what it was doing. If a task grows (6+ tool calls) without notes, or the
-  notes fall 15 calls behind, the agent is reminded to save them.
+  compaction or a long break the agent knows what it was doing. The agent is reminded to save them when a task reaches
+  4 tool calls without notes, when they fall 8 calls behind, and right after the context is compacted (the reminder
+  goes at the end of the context, so prompt caching keeps working).
 - **Pause** (above the message box, `/pause`, or ⌘⇧P) interrupts the session and its subagents and holds them: no new
   tool calls or model requests until you **Resume** (the same button, `/resume`, ⌘⇧R) or send a new message. The
-  running command is stopped; the pause survives an app restart. Pause shows what it stopped ("shell: make train …")
-  and any background shells the agent started, which keep running. Resume tells the agent exactly that, and asks it
-  to check the notes and the files before redoing anything, because interrupted work may be incomplete. Other
-  sessions are never affected; your own terminal commands are not paused.
+  running command and the background commands the agent started are stopped; the pause survives an app restart.
+  Right after pausing, the session's own model writes a notes **checkpoint** (what is done, what may be half-finished,
+  the exact next step), so Resume starts from fresh notes; if that fails, the previous notes stay. Pause shows what it
+  stopped ("shell: make train …"). Resume tells the agent exactly that, hands over reminders that came due, and asks
+  it to check the notes and the files before redoing anything. Other sessions are never affected; your own terminal
+  commands are not paused.
 - **Handoffs**: `task_handoff export` writes the notes to `.opencode/handoffs/<name>.md` in the project. Commit it;
   a colleague with oc-enhance continues with "continue the handoff in .opencode/handoffs/<name>.md" (or
   `task_handoff import`), and anyone can simply read it. Handoffs are summaries, not instructions to execute.
@@ -85,7 +90,7 @@ pixi run desktop-dev start         # macOS: the installed Desktop app with an is
 
 Layout: `plugin/index.ts` (server plugin), `plugin/gui.tsx` (Pause pill, commands, Settings page, terminal relay),
 `plugin/notes.ts`, `plugin/documents.ts` + `plugin/doc-worker.mjs`, `plugin/search.ts` + `plugin/backend.ts`,
-`plugin/terminal*.ts`, `skill/pixi/SKILL.md`, `scripts/` (installer, doctor, smoke test).
+`plugin/terminal*.ts`, `plugin/reminders.ts`, `plugin/procs.ts`, `scripts/` (installer, doctor, smoke test).
 
 ### History
 

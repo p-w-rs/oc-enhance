@@ -2,11 +2,11 @@ import type { Plugin } from "@opencode/plugin"
 import type { ToolContext } from "@opencode/plugin/promise/tool"
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
 import { Backend } from "./backend.js"
 import { documentKind, extractDocument, readBounded, render } from "./documents.js"
 import { CHECKPOINT_MARK, checkpointPrompt, describeCall, handoffMarkdown, handoffName, NOTES_GUIDE, notesNudge, notesText, parseCheckpoint, parseHandoff, parseNotes, PausedError, resumePrompt, TaskNotes, type KV } from "./notes.js"
 import { stopCommands } from "./procs.js"
+import { capabilityIndex, cueText, parseModelRef, recent as recentOf, TopOfMind } from "./topofmind.js"
 import { dueText, reminderText, Reminders, type ReminderStorage } from "./reminders.js"
 import { EnhanceRpc, type StateView } from "./rpc.js"
 import { clearIndexes, folderSize, ProjectIndex } from "./search.js"
@@ -26,11 +26,7 @@ export function parseOptions(raw: unknown): EnhanceOptions {
   return options.dataDirectory ? { dataDirectory: options.dataDirectory as string } : {}
 }
 
-const SKILLS = fileURLToPath(new URL("../skill/", import.meta.url))
-/** Bundled know-how (machine-learning and data-science skills live in oc-knowhow). */
-const SKILL_IDS = ["pixi"] as const
 const REMINDER_GUIDE = "Reminders (oc-enhance): when you say you will check on something later (a long job, a deployment, a download, a follow-up), set a reminder with the reminder tool and end your turn; you are woken with your message when it is due, even after a restart. Don't wait with sleep loops in the shell, and don't promise to check later without setting one."
-const PIXI_HINT = "Python only through Pixi: use `pixi run --script file.py` (PEP 723 inline dependencies) for standalone scripts and a Pixi workspace for projects; never call python, pip, uv, conda or venv directly. Prefer Pixi-managed toolchains for other languages too. Load the pixi skill for details."
 const warn = (message: string, error?: unknown) => console.warn(`[${PLUGIN_ID}] ${message}${error ? `: ${error instanceof Error ? error.message : String(error)}` : ""}`)
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value)
 const blocked = (error: unknown) => record(error) && (error.name === "Permission.BlockedError" || (record(error.error) && error.error._tag === "Permission.BlockedError"))
@@ -61,6 +57,27 @@ export function createPlugin(): Plugin.Plugin {
           exists: async id => { try { await ctx.session.get({ sessionID: id as never }); return true } catch { return false } },
         })
         registrations.push({ dispose: () => reminders.stop() })
+        const topOfMind = new TopOfMind({
+          generate: async (model, prompt) => {
+            const reply = await Promise.race([
+              ctx.experimental.generate.text({ prompt, model: { providerID: model.providerID, id: model.id } } as never) as unknown as Promise<{ text?: string }>,
+              new Promise<never>((_, reject) => setTimeout(() => reject(new Error("no answer within 20 s")), 20_000).unref?.()),
+            ])
+            return String(reply?.text ?? "")
+          },
+          warn,
+        })
+        const skillCache = new Map<string, { at: number; skills: { name: string; description?: string }[] }>()
+        const skillsFor = async (sessionID: string) => {
+          const directory = (await ctx.session.get({ sessionID: sessionID as never })).location.directory as string
+          const cached = skillCache.get(directory)
+          if (cached && Date.now() - cached.at < 60_000) return cached.skills
+          const raw = await (ctx.skill as unknown as { list(input: unknown): Promise<unknown> }).list({ location: { directory } }).catch(() => [])
+          const list = (Array.isArray(raw) ? raw : (raw as { data?: unknown[] })?.data ?? []) as { name?: string; id?: string; description?: string }[]
+          const skills = list.map(skill => ({ name: String(skill.name ?? skill.id ?? ""), ...(skill.description && { description: skill.description }) })).filter(skill => skill.name)
+          skillCache.set(directory, { at: Date.now(), skills })
+          return skills
+        }
 
         const directory = async (context: ToolContext) => (await ctx.session.get({ sessionID: context.sessionID })).location.directory as string
         const assertAccess = (context: ToolContext, action: string, path: string) => ctx.permission.assert({
@@ -237,24 +254,6 @@ export function createPlugin(): Plugin.Plugin {
 
         registrations.push(...await installTerminals(ctx, { enabled: () => settings.current().terminals, write: () => settings.current().terminalWrite }))
 
-        // ---- Know-how (skills, loaded by agents only when needed) ----
-        let skillReady = false
-        try {
-          const skills = await Promise.all(SKILL_IDS.map(async id => {
-            const path = join(SKILLS, id, "SKILL.md")
-            const content = await readFile(path, "utf8")
-            return { id, path, content, description: /^description:\s*(.+)$/m.exec(content)?.[1] ?? id }
-          }))
-          registrations.push(await ctx.skill.transform(editor => {
-            const current = settings.current()
-            for (const skill of skills) {
-              if (!current.pixi) continue
-              editor.add({ id: skill.id as never, name: skill.id as never, description: skill.description, path: skill.path as never, content: skill.content })
-            }
-          }))
-          skillReady = true
-        } catch (error) { warn("skills not registered", error) }
-
         // ---- Pause gate, notes in context ----
         registrations.push(await ctx.tool.hook("execute.before", async input => {
           if (!settings.current().notes) return
@@ -291,6 +290,7 @@ export function createPlugin(): Plugin.Plugin {
         registrations.push(await ctx.session.hook("compaction", async input => { notes.compacted(input.sessionID) }))
         registrations.push(await ctx.session.hook("context", async input => {
           const current = settings.current()
+          const tail: string[] = []
           if (current.notes) {
             let paused: string | undefined
             try { paused = await notes.pausedBy(input.sessionID) } catch {}
@@ -304,13 +304,20 @@ export function createPlugin(): Plugin.Plugin {
                 if (saved) input.system.push({ type: "text", text: `Current task notes (saved earlier in this session; the user's latest message takes precedence):\n${saved}` } as never)
                 const count = notes.callsSinceNotes(input.sessionID)
                 const nudge = notesNudge(!!entry.notes, count.total, count.sinceNotes, notes.wasCompacted(input.sessionID))
-                // At the end of the context, so the cached prefix stays the same from turn to turn.
-                if (nudge) input.messages.push({ role: "system", content: [{ type: "text", text: nudge }] } as never)
+                if (nudge) tail.push(nudge)
               } catch {}
             }
           }
+          if (current.topOfMind && input.tools) {
+            try {
+              const index = capabilityIndex(input.tools as Record<string, { description?: string }>, "skill" in input.tools ? await skillsFor(input.sessionID) : [])
+              const cues = topOfMind.cues(input.sessionID, index, recentOf(input.messages), parseModelRef(current.topOfMindModel))
+              if (cues.length) tail.push(cueText(cues))
+            } catch (error) { warn("top of mind skipped", error) }
+          }
+          // At the end of the context, so the cached prefix stays the same from turn to turn.
+          if (tail.length) input.messages.push({ role: "system", content: [{ type: "text", text: tail.join("\n\n") }] } as never)
           if (current.reminders && (!input.tools || "reminder" in input.tools)) input.system.push({ type: "text", text: REMINDER_GUIDE } as never)
-          if (current.pixi) input.system.push({ type: "text", text: PIXI_HINT } as never)
         }))
 
         // Sessions writing their pause checkpoint: their model request may pass the pause gate (it has no tools).
@@ -370,7 +377,7 @@ export function createPlugin(): Plugin.Plugin {
         // ---- Settings changes from the GUI or another process ----
         let reloading: Promise<void> | undefined
         const reload = () => {
-          reloading ??= Promise.all([ctx.tool.reload(), skillReady ? ctx.skill.reload() : undefined]).then(() => {}).catch(error => warn("reload failed", error)).finally(() => { reloading = undefined })
+          reloading ??= ctx.tool.reload().then(() => {}).catch(error => warn("reload failed", error)).finally(() => { reloading = undefined })
           return reloading
         }
         registrations.push({ dispose: settings.watch(() => void reload()) })
@@ -382,6 +389,7 @@ export function createPlugin(): Plugin.Plugin {
             paused: !!(await notes.pausedBy(sessionID)),
             ...(entry.paused && { pausedAt: entry.paused.at, interrupted: entry.paused.interrupted, ...(entry.paused.background?.length && { background: entry.paused.background }), ...(entry.paused.checkpoint && { checkpoint: entry.paused.checkpoint }) }),
             ...(entry.notes && { notes: entry.notes }), ...(entry.saved && { saved: entry.saved }), ...(entry.request && { request: entry.request }),
+            ...((last => last && { topOfMind: last })(topOfMind.last(sessionID))),
             reminders: (await reminders.list(sessionID).catch(() => [])).map(item => ({ id: item.id, message: item.message, due: item.due, ...(item.every && { every: item.every }) })),
           }
         }
@@ -404,6 +412,11 @@ export function createPlugin(): Plugin.Plugin {
           clearIndexes: async () => { await clearIndexes(indexes); await clearIndexes(join(data, "search", "home")); return state() },
           pause: async (input: unknown) => { const id = sessionInput(input); await pause(id); return sessionView(id) },
           resume: async (input: unknown) => { const id = sessionInput(input); await resume(id, !(record(input) && input.continue === false)); return sessionView(id) },
+          models: async () => {
+            const raw = await (ctx.model as unknown as { list(input: unknown): Promise<unknown> }).list({ types: ["chat"] }).catch(() => [])
+            const list = (Array.isArray(raw) ? raw : (raw as { data?: unknown[] })?.data ?? []) as { id?: string; modelID?: string; providerID?: string; name?: string; cost?: unknown }[]
+            return { models: list.filter(model => model.providerID && (model.modelID ?? model.id)).map(model => ({ id: `${model.providerID}/${model.modelID ?? model.id}`, name: model.name ?? model.modelID ?? model.id, provider: model.providerID })) }
+          },
           cancelReminder: async (input: unknown) => { const id = sessionInput(input); if (record(input) && typeof input.id === "string") await reminders.cancel(id, input.id); return sessionView(id) },
         } as never))
       } catch (error) {

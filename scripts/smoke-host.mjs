@@ -1,5 +1,5 @@
 // End-to-end check against a real OpenCode CLI (pinned) in an isolated home with a scripted local model (not a real
-// LLM). Verifies inside OpenCode's own runtime: tools and the pixi skill load, task notes reach the model, documents
+// LLM). Verifies inside OpenCode's own runtime: tools load, task notes reach the model, documents
 // (Word, Excel, PowerPoint, PDF) are read, project search works (meaning-based when the engine was downloaded with
 // pixi run setup-search), handoffs are written into the project, and terminal tools explain that Desktop is needed.
 // --snapshot loads a verified installed snapshot instead of the checkout.
@@ -120,8 +120,9 @@ try {
   assert.equal(calls.length, 0, "every scripted call was made")
   assert.ok(stdout.includes("OC_ENHANCE_SMOKE_COMPLETE"), "run completed")
   assert.doesNotMatch(stderr, /\[oc-enhance\] (disabled|reload failed|skills not registered)/, "no plugin warnings")
-  for (const name of ["save_task_notes", "task_handoff", "read_document", "search_project", "terminal_list", "terminal_write"]) assert.ok(toolNames.includes(name), `${name} offered`)
-  assert.match(systems.at(-1), /Python only through Pixi/)
+  for (const name of ["save_task_notes", "task_handoff", "read_document", "search_project", "reminder", "terminal_list", "terminal_write"]) assert.ok(toolNames.includes(name), `${name} offered`)
+  assert.match(systems.at(-1), /Reminders \(oc-enhance\)/)
+  assert.doesNotMatch(systems.at(-1), /Python only through Pixi/, "Pixi know-how lives in oc-pixi")
   assert.match(systems.at(-1), /Goal: Answer travel and budget questions/, "task notes reach the model")
   const all = toolResults.join("\n")
   assert.match(all, /flight is cancelled overnight/, "Word read")

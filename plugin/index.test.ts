@@ -86,19 +86,17 @@ test("identity and options", () => {
   assert.throws(() => parseOptions({ dataDirectory: "relative" }), /absolute/)
 })
 
-test("all features on by default: tools, pixi skill and guidance; turning features off removes them", async () => {
+test("all features on by default: tools and guidance; turning features off removes them", async () => {
   const h = await host()
   assert.deepEqual([...h.tools.keys()].sort(), ["read_document", "reminder", "save_task_notes", "search_project", "task_handoff", "terminal_list", "terminal_open", "terminal_read", "terminal_write"])
-  assert.deepEqual(h.skills.map(s => s.id), ["pixi"])
+  assert.deepEqual(h.skills, [], "Pixi know-how moved to oc-pixi")
   const system = await h.context()
   assert.match(system, /Task notes \(oc-enhance\)/)
-  assert.match(system, /Python only through Pixi/)
+  assert.doesNotMatch(system, /Pixi/)
   assert.match(system, /Reminders \(oc-enhance\)/)
-  await h.rpc().update({ documents: false, terminals: false, pixi: false, reminders: false })
+  await h.rpc().update({ documents: false, terminals: false, reminders: false })
   assert.deepEqual([...h.tools.keys()].sort(), ["save_task_notes", "search_project", "task_handoff"])
   assert.doesNotMatch(await h.context(), /Reminders/)
-  assert.deepEqual(h.skills, [])
-  assert.doesNotMatch(await h.context(), /Pixi/)
   const state = await h.rpc().state({})
   assert.equal(state.settings.documents, false)
   assert.equal(state.search.supported, true)
@@ -229,5 +227,18 @@ test("reminder tool: set, list, cancel; due reminders wake the session; a paused
   assert.match(await h.call("reminder", { action: "cancel", id }), /Cancelled/)
   assert.equal((await h.rpc().session({ sessionID: "s" })).reminders.length, 0)
   await assert.rejects(h.call("reminder", { action: "set", minutes: 5 }), /message is required/)
+  await h.cleanup()
+})
+
+test("top of mind: a cue in the context tail for the moment; off in settings removes it", async () => {
+  const h = await host()
+  const input = { sessionID: "tm", system: [] as any[], messages: [{ role: "user", content: [{ type: "text", text: "It takes about 30 minutes, check back on it later" }] }] as any[], tools: { reminder: { description: "Timers." }, read: { description: "Read." } } }
+  await h.run("session.context", input)
+  assert.match(JSON.stringify(input.messages.at(-1)), /Top of mind for this step[^"]*\\n- reminder: set a timer/)
+  await h.rpc().update({ topOfMind: false, topOfMindModel: "opencode-go/fast" })
+  const again = { ...input, messages: [input.messages[0]] }
+  await h.run("session.context", again)
+  assert.equal(again.messages.length, 1)
+  assert.equal((await h.rpc().state({})).settings.topOfMindModel, "opencode-go/fast")
   await h.cleanup()
 })

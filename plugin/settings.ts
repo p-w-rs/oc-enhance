@@ -4,7 +4,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 export const PLUGIN_ID = "oc-enhance"
-export const VERSION = "1.3.0"
+export const VERSION = "1.4.0"
 
 /** `$XDG_DATA_HOME/oc-enhance` unless configured. */
 export const dataDirectory = (configured?: string) => configured ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), PLUGIN_ID)
@@ -14,6 +14,10 @@ export interface Settings {
   readonly notes: boolean
   /** The reminder tool: agents set timers that wake the session later. */
   readonly reminders: boolean
+  /** Short cues for the capabilities the current moment calls for (rules, plus the fast model if one is set). */
+  readonly topOfMind: boolean
+  /** "provider/model" of a fast model that helps choose the cues, shared by every session; "" for rules only. */
+  readonly topOfMindModel: string
   /** read_document for Word, Excel, PowerPoint and PDF. */
   readonly documents: boolean
   /** search_project. */
@@ -22,18 +26,17 @@ export interface Settings {
   readonly terminals: boolean
   /** "allow": agents type into terminals without asking; "ask": the native prompt for each write. */
   readonly terminalWrite: "allow" | "ask"
-  /** The pixi skill and a one-line reminder to use Pixi for Python. */
-  readonly pixi: boolean
 }
 
-export const DEFAULTS: Settings = { notes: true, reminders: true, documents: true, search: true, terminals: true, terminalWrite: "allow", pixi: true }
-const BOOLEANS = ["notes", "reminders", "documents", "search", "terminals", "pixi"] as const
+export const DEFAULTS: Settings = { notes: true, reminders: true, topOfMind: true, topOfMindModel: "", documents: true, search: true, terminals: true, terminalWrite: "allow" }
+const BOOLEANS = ["notes", "reminders", "topOfMind", "documents", "search", "terminals"] as const
 
 export function normalizeSettings(raw: unknown, base: Settings = DEFAULTS): Settings {
   const value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {}
   const result: Record<string, unknown> = { ...base }
   for (const key of BOOLEANS) if (typeof value[key] === "boolean") result[key] = value[key]
   if (value.terminalWrite === "allow" || value.terminalWrite === "ask") result.terminalWrite = value.terminalWrite
+  if (typeof value.topOfMindModel === "string" && (value.topOfMindModel === "" || /^[^/\s]+\/\S+$/.test(value.topOfMindModel.trim()))) result.topOfMindModel = value.topOfMindModel.trim()
   return result as unknown as Settings
 }
 

@@ -47,14 +47,25 @@ function SettingsView(props: { ctx: Context; client: () => Client }) {
     catch (cause) { ctx.toast.show({ title: "Enhance", description: message(cause), variant: "error" }) }
     finally { await refresh() }
   }
-  const toggle = (key: "notes" | "reminders" | "documents" | "search" | "terminals" | "pixi") => (value: boolean) => void act(() => api().update({ [key]: value }))
+  const pickModel = async () => {
+    try {
+      const { models } = await api().models({}) as unknown as { models: { id: string; name: string; provider: string }[] }
+      const choice = await ctx.dialogs.select({
+        title: "Fast model for top of mind", placeholder: "Search models",
+        current: state()?.settings.topOfMindModel ?? "",
+        options: [{ title: "None (rules only)", value: "", description: "Cues from simple rules; no extra model requests" }, ...models.map(model => ({ title: model.name, value: model.id, description: model.id, group: model.provider }))],
+      })
+      if (choice !== undefined) await act(() => api().update({ topOfMindModel: choice }), choice ? `Top of mind uses ${choice}` : "Top of mind uses rules only")
+    } catch (cause) { ctx.toast.show({ title: "Enhance", description: message(cause), variant: "error" }) }
+  }
+  const toggle = (key: "notes" | "reminders" | "topOfMind" | "documents" | "search" | "terminals") => (value: boolean) => void act(() => api().update({ [key]: value }))
   onMount(() => {
     void refresh()
     // While a download runs, keep the progress current even if the window is in the background.
     const timer = setInterval(() => { if (state()?.search.installing || !state()) void refresh() }, 1500)
     onCleanup(() => clearInterval(timer))
   })
-  const feature = (key: "notes" | "reminders" | "documents" | "search" | "terminals" | "pixi", title: string, text: string, extra?: () => JSX.Element) => (
+  const feature = (key: "notes" | "reminders" | "topOfMind" | "documents" | "search" | "terminals", title: string, text: string, extra?: () => JSX.Element) => (
     <div style={card}>
       <ctx.ui.Switch label={title} checked={state()!.settings[key]} onChange={toggle(key)} />
       <span style={muted}>{text}</span>
@@ -68,6 +79,12 @@ function SettingsView(props: { ctx: Context; client: () => Client }) {
       <Show when={state()}>{current => <>
         {feature("notes", "Task notes, Pause and Resume", "Agents keep short notes (goal, progress, next step) that they see on every turn and are reminded to keep current. Pause above the message box stops the agent, its subagents and the background commands it started, saves a notes checkpoint, and keeps everything stopped until you resume; the agent then continues from its notes. Notes can be handed to a colleague as a file in the project (.opencode/handoffs).")}
         {feature("reminders", "Reminders", "Adds reminder: agents set timers for themselves (\"in 40 min, check the training run\") and are woken with their message when it is due, even after a restart. A paused session gets its reminders when you resume. They appear under the Pause button, where you can cancel them.")}
+        {feature("topOfMind", "Top of mind", "In long chats agents forget what they can do. Before each step they get at most three short cues for the capabilities that moment calls for (a tool for Office files, reminders, the reference library, a matching skill …), chosen from the session's own tools and skills by simple rules and, optionally, by a fast model. Cues go at the end of the context, so prompt caching keeps working.", () => (
+          <div style={{ display: "flex", gap: "8px", "align-items": "center", "flex-wrap": "wrap" }}>
+            <span style={muted}>Fast model (all sessions): {current().settings.topOfMindModel || "none, rules only"}</span>
+            <ctx.ui.Button size="small" variant="ghost" onClick={() => void pickModel()}>Choose…</ctx.ui.Button>
+          </div>
+        ))}
         {feature("documents", "Read Word, Excel, PowerPoint and PDF", "Adds read_document: agents read .docx, .xlsx, .pptx and .pdf files as text, by page, slide or sheet. Scanned pages without text are not supported (no OCR).")}
         {feature("search", "Project search", "Adds search_project: agents find where something is described or implemented when they don't know the exact words, across code and documents. Indexes are kept in oc-enhance's data folder, never in your projects. Works with keywords out of the box; download the search engine for meaning-based search.", () => (
           <div style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
@@ -91,7 +108,6 @@ function SettingsView(props: { ctx: Context; client: () => Client }) {
         {feature("terminals", "Shared terminals", "Agents can list, read, type into and open terminals in the Review pane (needs OpenCode Desktop to be open). You see everything they type.", () => (
           <ctx.ui.Switch label="Ask before an agent types into a terminal" checked={current().settings.terminalWrite === "ask"} onChange={value => void act(() => api().update({ terminalWrite: value ? "ask" : "allow" }))} />
         ))}
-        {feature("pixi", "Pixi know-how", "Agents are reminded to use Pixi for Python (scripts and projects) and to prefer Pixi-managed toolchains, and get a pixi skill with the details. Nothing is blocked.")}
         <span style={muted}>oc-enhance {current().version} · data in {current().dataDirectory} · settings apply to every session on this computer.</span>
       </>}</Show>
     </div>
@@ -154,6 +170,7 @@ export default Plugin.define({
             ...[...new Set(view.interrupted ?? [])].slice(0, 4).map((label, index) => ({ id: `stopped-${index}`, label: `Stopped: ${label}`.slice(0, 120) })),
             ...(view.background ?? []).slice(0, 4).map((label, index) => ({ id: `bg-${index}`, label: `Stopped background: ${label}`.slice(0, 120) })),
             ...reminderRows(session, view),
+            ...(view.topOfMind?.cues ?? []).slice(0, 3).map((cue, index) => ({ id: `cue-${index}`, label: `Top of mind: ${cue.name.replace(/^skill:/, "skill ")} (${cue.why})`.slice(0, 120) })),
           ],
         }
         if (view.reminders?.length) return {
@@ -174,7 +191,7 @@ export default Plugin.define({
 
     ctx.add(SettingsPage, {
       id: "enhance", title: "Enhance", icon: "sliders",
-      entries: [{ id: "enhance", title: "Enhance", description: "Task notes and Pause, documents, project search, shared terminals, Pixi", keywords: "oc-enhance pause resume notes handoff documents word excel powerpoint pdf search terminals pixi" }],
+      entries: [{ id: "enhance", title: "Enhance", description: "Task notes and Pause, documents, project search, shared terminals, reminders", keywords: "oc-enhance pause resume notes handoff documents word excel powerpoint pdf search terminals reminders timers" }],
       render: () => (
         <ctx.ui.SettingsLayout title="Enhance" description="Small additions to OpenCode. Each one can be turned off; OpenCode's own tools are never changed or blocked.">
           <SettingsView ctx={ctx} client={() => ctx.client} />

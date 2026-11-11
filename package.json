@@ -1,10 +1,10 @@
 {
   "name": "oc-enhance",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "license": "UNLICENSED",
   "type": "module",
-  "description": "Small enhancements to OpenCode: task notes with Pause/Resume and handoffs, Word/Excel/PowerPoint/PDF reading, meaning-based project search, shared terminals, Pixi know-how",
+  "description": "Small enhancements to OpenCode: task notes with Pause/Resume and handoffs, reminders, Word/Excel/PowerPoint/PDF reading, meaning-based project search, shared terminals",
   "repository": {
     "type": "git",
     "url": "https://github.com/p-w-rs/oc-enhance.git"
@@ -25,7 +25,6 @@
     "!plugin/test*.ts",
     "dist/gui-experimental.cjs",
     "scripts/*.mjs",
-    "skill",
     "docs",
     "README.md",
     "pixi.toml",

@@ -13,7 +13,7 @@ export const EnhanceRpc = {
     state: { input: object({ sessionID }), output },
     session: { input: object({ sessionID }, ["sessionID"]), output },
     update: {
-      input: object({ notes: { type: "boolean" }, reminders: { type: "boolean" }, documents: { type: "boolean" }, search: { type: "boolean" }, terminals: { type: "boolean" }, pixi: { type: "boolean" }, terminalWrite: { enum: ["allow", "ask"] } }),
+      input: object({ notes: { type: "boolean" }, reminders: { type: "boolean" }, topOfMind: { type: "boolean" }, topOfMindModel: { type: "string", maxLength: 300 }, documents: { type: "boolean" }, search: { type: "boolean" }, terminals: { type: "boolean" }, terminalWrite: { enum: ["allow", "ask"] } }),
       output,
     },
     installSearch: { input: object({}), output },
@@ -21,6 +21,7 @@ export const EnhanceRpc = {
     clearIndexes: { input: object({}), output },
     pause: { input: object({ sessionID }, ["sessionID"]), output },
     resume: { input: object({ sessionID, continue: { type: "boolean" } }, ["sessionID"]), output },
+    models: { input: object({}), output },
     cancelReminder: { input: object({ sessionID, id: { type: "string", minLength: 1, maxLength: 100 } }, ["sessionID", "id"]), output },
   },
   events: {},
@@ -34,6 +35,7 @@ export interface SessionView {
   readonly checkpoint?: "saving" | "saved" | "failed"
   readonly reminders?: readonly { readonly id: string; readonly message: string; readonly due: number; readonly every?: number }[]
   readonly notes?: Notes
+  readonly topOfMind?: { readonly cues: readonly { readonly name: string; readonly why: string; readonly source: string }[]; readonly at: number }
   readonly saved?: { readonly at: number; readonly by: "agent" | "checkpoint" }
   readonly request?: string
 }
