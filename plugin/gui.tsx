@@ -47,14 +47,14 @@ function SettingsView(props: { ctx: Context; client: () => Client }) {
     catch (cause) { ctx.toast.show({ title: "Enhance", description: message(cause), variant: "error" }) }
     finally { await refresh() }
   }
-  const toggle = (key: "notes" | "documents" | "search" | "terminals" | "pixi") => (value: boolean) => void act(() => api().update({ [key]: value }))
+  const toggle = (key: "notes" | "reminders" | "documents" | "search" | "terminals" | "pixi") => (value: boolean) => void act(() => api().update({ [key]: value }))
   onMount(() => {
     void refresh()
     // While a download runs, keep the progress current even if the window is in the background.
     const timer = setInterval(() => { if (state()?.search.installing || !state()) void refresh() }, 1500)
     onCleanup(() => clearInterval(timer))
   })
-  const feature = (key: "notes" | "documents" | "search" | "terminals" | "pixi", title: string, text: string, extra?: () => JSX.Element) => (
+  const feature = (key: "notes" | "reminders" | "documents" | "search" | "terminals" | "pixi", title: string, text: string, extra?: () => JSX.Element) => (
     <div style={card}>
       <ctx.ui.Switch label={title} checked={state()!.settings[key]} onChange={toggle(key)} />
       <span style={muted}>{text}</span>
@@ -66,7 +66,8 @@ function SettingsView(props: { ctx: Context; client: () => Client }) {
       <Show when={error() && !state()}><div style={{ color: "#e03131" }}>oc-enhance is not answering: {error()}. Is it installed on this server?</div></Show>
       <Show when={!state() && !error()}><ctx.ui.Loader /></Show>
       <Show when={state()}>{current => <>
-        {feature("notes", "Task notes, Pause and Resume", "Agents keep short notes (goal, progress, next step) that they see on every turn. Pause above the message box stops the agent and keeps it stopped until you resume; the agent then continues from its notes. Notes can be handed to a colleague as a file in the project (.opencode/handoffs).")}
+        {feature("notes", "Task notes, Pause and Resume", "Agents keep short notes (goal, progress, next step) that they see on every turn and are reminded to keep current. Pause above the message box stops the agent, its subagents and the background commands it started, saves a notes checkpoint, and keeps everything stopped until you resume; the agent then continues from its notes. Notes can be handed to a colleague as a file in the project (.opencode/handoffs).")}
+        {feature("reminders", "Reminders", "Adds reminder: agents set timers for themselves (\"in 40 min, check the training run\") and are woken with their message when it is due, even after a restart. A paused session gets its reminders when you resume. They appear under the Pause button, where you can cancel them.")}
         {feature("documents", "Read Word, Excel, PowerPoint and PDF", "Adds read_document: agents read .docx, .xlsx, .pptx and .pdf files as text, by page, slide or sheet. Scanned pages without text are not supported (no OCR).")}
         {feature("search", "Project search", "Adds search_project: agents find where something is described or implemented when they don't know the exact words, across code and documents. Indexes are kept in oc-enhance's data folder, never in your projects. Works with keywords out of the box; download the search engine for meaning-based search.", () => (
           <div style={{ display: "flex", "flex-direction": "column", gap: "6px" }}>
@@ -123,9 +124,17 @@ export default Plugin.define({
       } catch (cause) { ctx.toast.show({ title: action === "pause" ? "Could not pause" : "Could not resume", description: message(cause), variant: "error" }) }
       finally { setBusy(previous => ({ ...previous, [session.key]: false })) }
     }
+    const until = (due: number) => { const minutes = Math.round((due - Date.now()) / 60000); return minutes <= 0 ? "due now" : minutes < 60 ? `in ${minutes} min` : `in ${(minutes / 60).toFixed(1)} h` }
+    const reminderRows = (session: MountedSession, view: SessionView) => (view.reminders ?? []).slice(0, 5).map(item => ({
+      id: `reminder-${item.id}`, icon: "notifications" as const, label: `Reminder ${until(item.due)}${item.every ? ` (every ${item.every} min)` : ""}: ${item.message}`.slice(0, 120),
+      run: () => void (async () => {
+        try { set(session.key, await session.server.client.rpc(EnhanceRpc).cancelReminder({ sessionID: session.id, id: item.id }, { ...(session.location && { location: session.location }) }) as unknown as SessionView); ctx.toast.show({ title: "Reminder cancelled", variant: "success" }) }
+        catch (cause) { ctx.toast.show({ title: "Could not cancel the reminder", description: message(cause), variant: "error" }) }
+      })(),
+    }))
     const timer = setInterval(() => {
       const session = ctx.sessions.current()
-      if (session && document.visibilityState === "visible") void load(session)
+      if (session) void load(session)
     }, 3000)
     ctx.signal.addEventListener("abort", () => clearInterval(timer), { once: true })
 
@@ -141,10 +150,15 @@ export default Plugin.define({
           rows: [
             { id: "resume", label: "Resume (agent continues)", icon: "enter", run: () => void act(session, "resume") },
             ...(view.notes ? [{ id: "next", label: `Next: ${view.notes.next || view.notes.goal}`.slice(0, 120) }] : []),
-            ...(view.pausedAt ? [{ id: "when", label: `Paused ${ago(view.pausedAt)}` }] : []),
+            ...(view.pausedAt ? [{ id: "when", label: `Paused ${ago(view.pausedAt)}${view.checkpoint === "saving" ? " · saving notes…" : view.checkpoint === "saved" ? " · notes saved" : view.checkpoint === "failed" ? " · notes not updated" : ""}` }] : []),
             ...[...new Set(view.interrupted ?? [])].slice(0, 4).map((label, index) => ({ id: `stopped-${index}`, label: `Stopped: ${label}`.slice(0, 120) })),
-            ...(view.background ?? []).slice(0, 4).map((label, index) => ({ id: `bg-${index}`, label: `Still running in the background: ${label}`.slice(0, 120), tone: "warning" as const })),
+            ...(view.background ?? []).slice(0, 4).map((label, index) => ({ id: `bg-${index}`, label: `Stopped background: ${label}`.slice(0, 120) })),
+            ...reminderRows(session, view),
           ],
+        }
+        if (view.reminders?.length) return {
+          label: busy()[session.key] ? "Pausing…" : "Pause", icon: "stop", title: "Pause: stop the agent now and keep it stopped until you resume",
+          rows: [{ id: "pause", label: "Pause now", icon: "stop", run: () => void act(session, "pause") }, ...reminderRows(session, view)],
         }
         return { label: busy()[session.key] ? "Pausing…" : "Pause", icon: "stop", title: "Pause: stop the agent now and keep it stopped until you resume", run: () => void act(session, "pause") }
       },

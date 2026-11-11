@@ -15,8 +15,13 @@ export interface SessionNotes {
   notes?: Notes
   /** The user's first request, kept automatically until the agent saves notes. */
   request?: string
-  /** interrupted: what was running when paused; background: shells the agent had left running in the background. */
-  paused?: { at: number; interrupted: string[]; background?: string[] }
+  /**
+   * interrupted: what was running when paused; background: background shells the pause stopped;
+   * checkpoint: whether the agent's notes were brought up to date at the pause.
+   */
+  paused?: { at: number; interrupted: string[]; background?: string[]; checkpoint?: "saving" | "saved" | "failed" }
+  /** When the notes were last saved, and by whom ("agent" or the pause "checkpoint"). */
+  saved?: { at: number; by: "agent" | "checkpoint" }
   updated?: number
 }
 
@@ -62,7 +67,7 @@ export function notesText(entry: SessionNotes): string | undefined {
   ].filter(Boolean).join("\n")
 }
 
-export const NOTES_GUIDE = "Task notes (oc-enhance): for multi-step work, call save_task_notes when you start and after each milestone (goal, done so far, next step, key decisions, important files). They let the user pause and resume, survive restarts, and can be handed to someone else with task_handoff. Skip them for quick one-step requests. Never put secrets in notes."
+export const NOTES_GUIDE = "Task notes (oc-enhance): for any task that takes more than a few steps, call save_task_notes when you start, after each milestone, at least every ~8 tool calls, and before you end a turn with work still pending (goal, done so far, next step, key decisions, important files). Write them so someone could continue from them alone. They are shown to you every turn, survive pauses, restarts and context compaction, and can be handed over with task_handoff. Skip them for quick one-step requests. Never put secrets in notes."
 
 // ---- Handoff files (Markdown, readable by people and by agents) ----
 
@@ -121,6 +126,8 @@ export interface SessionHost {
   parent(sessionID: string): Promise<string | undefined>
   children(sessionID: string): Promise<string[]>
   interrupt(sessionID: string): Promise<void>
+  /** Stops these background shell commands; returns the ones that were running. */
+  stopShells?(commands: string[]): Promise<string[]>
 }
 
 /**
@@ -129,11 +136,14 @@ export interface SessionHost {
  */
 interface Activity {
   running: Map<string, Map<string, string>>
-  background: Map<string, Map<string, string>>
+  /** session → shell ID → what to show, and the exact command (to find its process). */
+  background: Map<string, Map<string, { label: string; command: string }>>
   calls: Map<string, { total: number; atNotes: number }>
+  /** Sessions whose context was just compacted (the next turn asks for fresh notes). */
+  compacted: Set<string>
 }
-const ACTIVITY = Symbol.for("oc-enhance.activity.v1")
-const activity: Activity = ((globalThis as Record<symbol, unknown>)[ACTIVITY] ??= { running: new Map(), background: new Map(), calls: new Map() }) as Activity
+const ACTIVITY = Symbol.for("oc-enhance.activity.v2")
+const activity: Activity = ((globalThis as Record<symbol, unknown>)[ACTIVITY] ??= { running: new Map(), background: new Map(), calls: new Map(), compacted: new Set() }) as Activity
 
 /** A short description of a tool call for people: "shell: sleep 45 && …", "write: notes.txt". */
 export function describeCall(tool: string, input: unknown): string {
@@ -170,11 +180,18 @@ export class TaskNotes {
     })
   }
 
-  save(sessionID: string, notes: Notes) {
+  save(sessionID: string, notes: Notes, by: "agent" | "checkpoint" = "agent") {
     const count = activity.calls.get(sessionID)
     if (count) count.atNotes = count.total
-    return this.#update(sessionID, entry => { entry.notes = notes })
+    activity.compacted.delete(sessionID)
+    return this.#update(sessionID, entry => { entry.notes = notes; entry.saved = { at: Date.now(), by } })
   }
+  /** Records the state of the pause checkpoint. */
+  checkpointed(sessionID: string, state: "saving" | "saved" | "failed") {
+    return this.#update(sessionID, entry => { if (entry.paused) entry.paused.checkpoint = state })
+  }
+  compacted(sessionID: string) { activity.compacted.add(sessionID) }
+  wasCompacted(sessionID: string) { return activity.compacted.has(sessionID) }
   remember(sessionID: string, request: string) {
     return this.#update(sessionID, entry => { if (!entry.notes && !entry.request && request.trim()) entry.request = request.trim().slice(0, 500) })
   }
@@ -207,10 +224,10 @@ export class TaskNotes {
   finished(sessionID: string, callID: string) { this.#running.get(sessionID)?.delete(callID) }
 
   /** A shell the agent moved to the background keeps running while paused; remember it so Pause can say so. */
-  backgrounded(sessionID: string, shellID: string, command: string) {
+  backgrounded(sessionID: string, shellID: string, label: string, command: string) {
     let shells = activity.background.get(sessionID)
     if (!shells) activity.background.set(sessionID, shells = new Map())
-    shells.set(shellID, command)
+    shells.set(shellID, { label, command })
   }
   shellEnded(shellID: string) { for (const shells of activity.background.values()) shells.delete(shellID) }
 
@@ -220,18 +237,31 @@ export class TaskNotes {
     return { total: count.total, sinceNotes: count.total - count.atNotes }
   }
 
-  /** Saves the pause first, then interrupts the session and its subagents. */
-  async pause(sessionID: string): Promise<{ interrupted: string[]; background: string[]; failed: string[] }> {
+  /**
+   * Saves the pause first (so nothing new starts), then interrupts the session and its subagents and stops the
+   * background shells they started.
+   */
+  async pause(sessionID: string): Promise<{ interrupted: string[]; background: string[]; failed: string[]; worked: boolean }> {
     const sessions = [sessionID]
     for (let index = 0; index < sessions.length && sessions.length < 200; index++) {
       for (const child of await this.host.children(sessions[index]!).catch(() => [] as string[])) if (!sessions.includes(child)) sessions.push(child)
     }
     const interrupted = sessions.flatMap(id => [...(this.#running.get(id)?.values() ?? [])]).filter(label => !/^save_task_notes/.test(label))
-    const background = sessions.flatMap(id => [...(activity.background.get(id)?.values() ?? [])])
-    await this.#update(sessionID, entry => { entry.paused = { at: Date.now(), interrupted, ...(background.length && { background }) } })
+    const shells = sessions.flatMap(id => [...(activity.background.get(id)?.entries() ?? [])].map(([shellID, shell]) => ({ sessionID: id, shellID, ...shell })))
+    await this.#update(sessionID, entry => { entry.paused = { at: Date.now(), interrupted } })
     const failed: string[] = []
     await Promise.all(sessions.map(async id => { try { await this.host.interrupt(id) } catch { failed.push(id) } }))
-    return { interrupted, background, failed }
+    let background: string[] = []
+    if (shells.length && this.host.stopShells) {
+      const squash = (text: string) => text.replace(/\s+/g, " ").trim()
+      const stopped = new Set((await this.host.stopShells(shells.map(shell => shell.command)).catch(() => [] as string[])).map(squash))
+      background = shells.filter(shell => stopped.has(squash(shell.command))).map(shell => shell.label)
+      for (const shell of shells) activity.background.get(shell.sessionID)?.delete(shell.shellID)
+      if (background.length) await this.#update(sessionID, entry => { if (entry.paused) entry.paused.background = background })
+    }
+    // Whether the agent did anything in this tree since this OpenCode process started (a checkpoint is worth asking for).
+    const worked = sessions.some(id => (activity.calls.get(id)?.total ?? 0) > 0)
+    return { interrupted, background, failed, worked }
   }
 
   /** Clears the pause; returns what the pause recorded (undefined if the session was not paused). */
@@ -246,19 +276,44 @@ export class TaskNotes {
 
 export const RESUME_PROMPT = "Resume the paused task. Check your task notes and the current state of the files first; work that was interrupted may be incomplete, so verify it instead of assuming it finished. Do not blindly repeat commands that change things."
 
-/** The message that continues a paused session: what was interrupted, and what kept running in the background. */
-export function resumePrompt(paused: SessionNotes["paused"]): string {
+/** The message that continues a paused session: what was interrupted or stopped, and reminders that came due. */
+export function resumePrompt(paused: SessionNotes["paused"], reminders: readonly string[] = []): string {
   const minutes = paused ? Math.round((Date.now() - paused.at) / 60000) : 0
   return [
     RESUME_PROMPT,
+    paused?.checkpoint === "saved" ? "Your task notes were updated when the pause started; continue from their next step." : "",
     paused?.interrupted.length ? `Interrupted by the pause${minutes ? ` ${minutes} min ago` : ""}: ${[...new Set(paused.interrupted)].join("; ")}. Check whether each one completed (look at the files or outputs it should have produced) before redoing it.` : "",
-    paused?.background?.length ? `These background commands were left running during the pause and may have finished meanwhile: ${paused.background.join("; ")}. Check their output rather than starting them again.` : "",
+    paused?.background?.length ? `The pause also stopped these background commands: ${paused.background.join("; ")}. They did not finish; check what they left behind and start them again if they are still needed.` : "",
+    reminders.length ? `Reminders that came due while paused:\n${reminders.join("\n")}` : "",
   ].filter(Boolean).join("\n")
 }
 
-/** A nudge when a long task has no (or stale) notes; undefined when notes are fine. */
-export function notesNudge(hasNotes: boolean, total: number, sinceNotes: number): string | undefined {
-  if (!hasNotes && total >= 6) return `You have made ${total} tool calls in this task without saving task notes. Call save_task_notes now (goal, done so far, next step), so the work survives a pause, a restart or a handoff.`
-  if (hasNotes && sinceNotes >= 15) return `Your task notes are ${sinceNotes} tool calls old. Update them with save_task_notes (done so far, next step) at this milestone.`
+/** The request for a notes checkpoint when the user pauses (answered by the session's own model, with its context). */
+export const CHECKPOINT_MARK = "[oc-enhance pause checkpoint]"
+export function checkpointPrompt(paused: SessionNotes["paused"]): string {
+  return [
+    `${CHECKPOINT_MARK} The user just paused this session. Before it stops, write your task notes as a checkpoint so that you, or a colleague, can resume exactly where you left off.`,
+    paused?.interrupted.length ? `The pause interrupted: ${paused.interrupted.join("; ")}. These may be incomplete.` : "",
+    paused?.background?.length ? `The pause stopped these background commands: ${paused.background.join("; ")}.` : "",
+    'Reply with only a JSON object: {"goal": "...", "progress": "...", "next": "...", "decisions": ["..."], "files": ["..."]}.',
+    "goal: what the user wants, including later changes. progress: what is done and verified, and what was in progress and may be incomplete. next: the exact next step. decisions: key choices made. files: important files. Each text under 1500 characters; no secrets; no other text.",
+  ].filter(Boolean).join("\n")
+}
+
+/** Reads the checkpoint reply: a JSON object, possibly inside a code fence. */
+export function parseCheckpoint(text: string): Notes {
+  const start = text.indexOf("{"), end = text.lastIndexOf("}")
+  if (start < 0 || end <= start) throw new Error("checkpoint reply has no JSON object")
+  const value = JSON.parse(text.slice(start, end + 1)) as Record<string, unknown>
+  const cut = (item: unknown, max: number) => typeof item === "string" ? item.slice(0, max) : item
+  const items = (item: unknown) => Array.isArray(item) ? item.slice(0, LIMIT.items).map(entry => cut(String(entry), LIMIT.item)) : undefined
+  return parseNotes({ goal: cut(value.goal, LIMIT.text), progress: cut(value.progress ?? "", LIMIT.text), next: cut(value.next ?? "", LIMIT.text), decisions: items(value.decisions), files: items(value.files) })
+}
+
+/** A nudge when a task has no (or stale) notes, or the context was just compacted; undefined when notes are fine. */
+export function notesNudge(hasNotes: boolean, total: number, sinceNotes: number, compacted = false): string | undefined {
+  if (compacted && total >= 1) return "The conversation was just compacted, so older details are now only in the summary. Update your task notes with save_task_notes now (goal, done so far, next step), so nothing important is lost."
+  if (!hasNotes && total >= 4) return `You have made ${total} tool calls in this task without saving task notes. Call save_task_notes now (goal, done so far, next step), so the work survives a pause, a restart or a handoff.`
+  if (hasNotes && sinceNotes >= 8) return `Your task notes are ${sinceNotes} tool calls old. Update them with save_task_notes (done so far, next step) now.`
   return undefined
 }

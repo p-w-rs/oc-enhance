@@ -5,7 +5,9 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { fileURLToPath } from "node:url"
 import { Backend } from "./backend.js"
 import { documentKind, extractDocument, readBounded, render } from "./documents.js"
-import { describeCall, handoffMarkdown, handoffName, NOTES_GUIDE, notesNudge, notesText, parseHandoff, parseNotes, PausedError, resumePrompt, TaskNotes, type KV } from "./notes.js"
+import { CHECKPOINT_MARK, checkpointPrompt, describeCall, handoffMarkdown, handoffName, NOTES_GUIDE, notesNudge, notesText, parseCheckpoint, parseHandoff, parseNotes, PausedError, resumePrompt, TaskNotes, type KV } from "./notes.js"
+import { stopCommands } from "./procs.js"
+import { dueText, reminderText, Reminders, type ReminderStorage } from "./reminders.js"
 import { EnhanceRpc, type StateView } from "./rpc.js"
 import { clearIndexes, folderSize, ProjectIndex } from "./search.js"
 import { dataDirectory, PLUGIN_ID, SettingsStore, VERSION } from "./settings.js"
@@ -27,6 +29,7 @@ export function parseOptions(raw: unknown): EnhanceOptions {
 const SKILLS = fileURLToPath(new URL("../skill/", import.meta.url))
 /** Bundled know-how (machine-learning and data-science skills live in oc-knowhow). */
 const SKILL_IDS = ["pixi"] as const
+const REMINDER_GUIDE = "Reminders (oc-enhance): when you say you will check on something later (a long job, a deployment, a download, a follow-up), set a reminder with the reminder tool and end your turn; you are woken with your message when it is due, even after a restart. Don't wait with sleep loops in the shell, and don't promise to check later without setting one."
 const PIXI_HINT = "Python only through Pixi: use `pixi run --script file.py` (PEP 723 inline dependencies) for standalone scripts and a Pixi workspace for projects; never call python, pip, uv, conda or venv directly. Prefer Pixi-managed toolchains for other languages too. Load the pixi skill for details."
 const warn = (message: string, error?: unknown) => console.warn(`[${PLUGIN_ID}] ${message}${error ? `: ${error instanceof Error ? error.message : String(error)}` : ""}`)
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value)
@@ -48,7 +51,16 @@ export function createPlugin(): Plugin.Plugin {
           parent: async id => (await ctx.session.get({ sessionID: id as never })).parentID ?? undefined,
           children: async id => ((await ctx.session.list({ parentID: id as never, limit: 100 } as never)) as unknown as { data: { id: string }[] }).data.map(child => child.id),
           interrupt: async id => { await ctx.session.interrupt({ sessionID: id as never, resume: false } as never) },
+          stopShells: commands => stopCommands(commands),
         })
+        const reminders = new Reminders(ctx.storage as unknown as ReminderStorage, {
+          pausedBy: id => notes.pausedBy(id),
+          deliver: async (reminder, body) => {
+            await ctx.session.synthetic({ sessionID: reminder.sessionID as never, text: body, description: `Reminder: ${reminder.message.slice(0, 80)}`, metadata: { source: PLUGIN_ID, reminderID: reminder.id }, delivery: "queue", resume: true } as never)
+          },
+          exists: async id => { try { await ctx.session.get({ sessionID: id as never }); return true } catch { return false } },
+        })
+        registrations.push({ dispose: () => reminders.stop() })
 
         const directory = async (context: ToolContext) => (await ctx.session.get({ sessionID: context.sessionID })).location.directory as string
         const assertAccess = (context: ToolContext, action: string, path: string) => ctx.permission.assert({
@@ -120,6 +132,42 @@ export function createPlugin(): Plugin.Plugin {
                   return text(`Loaded the handoff's notes into this session (they are a summary; check the project before continuing):\n\n${notesText({ notes: imported })}`)
                 }
                 throw new Error("action must be export, import or list")
+              },
+            })
+          }
+          if (current.reminders) {
+            editor.add({
+              name: "reminder",
+              description: "Timers for yourself. set: wake this session later with a message (e.g. minutes=40, message=\"Check whether the training run finished; if so, evaluate it\"), then end your turn; you are woken when it is due, even after a restart (while the user has paused the session it waits until they resume). Use it whenever you plan to check on something later, instead of sleep loops in the shell. every=N repeats every N minutes until cancelled. list: this session's reminders. cancel: remove one by id.",
+              input: {
+                type: "object",
+                properties: {
+                  action: { enum: ["set", "list", "cancel"] },
+                  minutes: { type: "number", description: "set: minutes from now (0.25 to 10080)" },
+                  at: { type: "string", maxLength: 40, description: "set: a date and time instead of minutes, ISO 8601 with time zone" },
+                  message: { type: "string", maxLength: 1000, description: "set: what to check or do when it goes off, with enough detail to act on it" },
+                  every: { type: "number", description: "set: repeat every this many minutes (optional)" },
+                  id: { type: "string", maxLength: 100, description: "cancel: the reminder id" },
+                },
+                required: ["action"], additionalProperties: false,
+              } as never,
+              options: { codemode: false },
+              execute: async (raw, context) => {
+                const input = raw as { action: string; minutes?: number; at?: string; message?: string; every?: number; id?: string }
+                if (input.action === "set") {
+                  const reminder = await reminders.set(context.sessionID, { message: input.message ?? "", ...(input.minutes !== undefined && { minutes: input.minutes }), ...(input.at !== undefined && { at: input.at }), ...(input.every !== undefined && { every: input.every }) })
+                  return text(`Reminder ${reminder.id} set for ${new Date(reminder.due).toISOString()} (${dueText(reminder.due)})${reminder.every ? `, then every ${reminder.every} min` : ""}. You can end your turn now; you will be woken with your message.`, { id: reminder.id, due: reminder.due })
+                }
+                if (input.action === "list") {
+                  const mine = await reminders.list(context.sessionID)
+                  return text(mine.length ? mine.map(item => `- ${item.id} ${dueText(item.due)}${item.every ? ` (every ${item.every} min)` : ""}: ${item.message}`).join("\n") : "No reminders in this session.")
+                }
+                if (input.action === "cancel") {
+                  if (!input.id) throw new Error("Give the id of the reminder to cancel (reminder action=list)")
+                  const removed = await reminders.cancel(context.sessionID, input.id)
+                  return text(removed ? `Cancelled reminder ${removed.id}: ${removed.message}` : `No reminder ${input.id} in this session.`)
+                }
+                throw new Error("action must be set, list or cancel")
               },
             })
           }
@@ -219,7 +267,8 @@ export function createPlugin(): Plugin.Plugin {
           if (input.status === "completed" && /^(shell|bash)$/.test(input.tool)) {
             const text = JSON.stringify((input as { result?: unknown }).result ?? "")
             const shell = /moved to the background \(shell ID: (sh_[A-Za-z0-9]+)\)/.exec(text)?.[1]
-            if (shell) notes.backgrounded(input.sessionID, shell, describeCall(input.tool, input.input))
+            const command = record(input.input) && typeof input.input.command === "string" ? input.input.command : undefined
+            if (shell && command) notes.backgrounded(input.sessionID, shell, describeCall(input.tool, input.input), command)
           }
         }))
         // Background shells that end are no longer "still running".
@@ -239,12 +288,14 @@ export function createPlugin(): Plugin.Plugin {
             if (typeof prompt.text === "string") await notes.remember(input.sessionID, prompt.text)
           } catch (error) { warn("could not update task notes", error) }
         }))
+        registrations.push(await ctx.session.hook("compaction", async input => { notes.compacted(input.sessionID) }))
         registrations.push(await ctx.session.hook("context", async input => {
           const current = settings.current()
           if (current.notes) {
             let paused: string | undefined
             try { paused = await notes.pausedBy(input.sessionID) } catch {}
-            if (paused) throw new PausedError()
+            // While paused, only the pause checkpoint's own request (no tools; its prompt is the last message) may run.
+            if (paused && !(checkpointing.has(input.sessionID) && isCheckpointRequest(input.messages))) throw new PausedError()
             if (!input.tools || "save_task_notes" in input.tools) {
               input.system.push({ type: "text", text: NOTES_GUIDE } as never)
               try {
@@ -252,23 +303,65 @@ export function createPlugin(): Plugin.Plugin {
                 const saved = notesText(entry)
                 if (saved) input.system.push({ type: "text", text: `Current task notes (saved earlier in this session; the user's latest message takes precedence):\n${saved}` } as never)
                 const count = notes.callsSinceNotes(input.sessionID)
-                const nudge = notesNudge(!!entry.notes, count.total, count.sinceNotes)
-                if (nudge) input.system.push({ type: "text", text: nudge } as never)
+                const nudge = notesNudge(!!entry.notes, count.total, count.sinceNotes, notes.wasCompacted(input.sessionID))
+                // At the end of the context, so the cached prefix stays the same from turn to turn.
+                if (nudge) input.messages.push({ role: "system", content: [{ type: "text", text: nudge }] } as never)
               } catch {}
             }
           }
+          if (current.reminders && (!input.tools || "reminder" in input.tools)) input.system.push({ type: "text", text: REMINDER_GUIDE } as never)
           if (current.pixi) input.system.push({ type: "text", text: PIXI_HINT } as never)
         }))
 
+        // Sessions writing their pause checkpoint: their model request may pass the pause gate (it has no tools).
+        const checkpointing = new Set<string>()
+        const isCheckpointRequest = (messages: unknown) => {
+          const last = Array.isArray(messages) ? messages.at(-1) as { content?: unknown } | undefined : undefined
+          return JSON.stringify(last?.content ?? "").includes(CHECKPOINT_MARK)
+        }
+        const checkpoint = async (sessionID: string) => {
+          const entry = await notes.get(sessionID)
+          if (!entry.paused || checkpointing.has(sessionID)) return
+          checkpointing.add(sessionID)
+          await notes.checkpointed(sessionID, "saving")
+          try {
+            // Right after the interrupt the session may still be settling (empty reply): wait and retry a few times.
+            let saved: ReturnType<typeof parseCheckpoint> | undefined
+            let failure: unknown
+            for (let attempt = 0; attempt < 4 && !saved; attempt++) {
+              await new Promise(resolve => setTimeout(resolve, attempt ? 2500 : 1500))
+              if (!(await notes.get(sessionID)).paused) return
+              try {
+                const reply = await ctx.session.generate({ sessionID: sessionID as never, prompt: checkpointPrompt(entry.paused) } as never) as unknown as { text?: string }
+                saved = parseCheckpoint(String(reply?.text ?? ""))
+              } catch (error) { failure = error; warn(`pause checkpoint attempt ${attempt + 1}`, error) }
+            }
+            if (!saved) throw failure ?? new Error("no checkpoint")
+            if (!(await notes.get(sessionID)).paused) return
+            await notes.save(sessionID, saved, "checkpoint")
+            await notes.checkpointed(sessionID, "saved")
+          } catch (error) {
+            warn("pause checkpoint failed; the notes stay as they were", error)
+            await notes.checkpointed(sessionID, "failed").catch(() => {})
+          } finally { checkpointing.delete(sessionID) }
+        }
         const pause = async (sessionID: string) => {
           if (!settings.current().notes) throw new Error("Pause is turned off in Settings → Enhance")
-          return notes.pause(sessionID)
+          const result = await notes.pause(sessionID)
+          // Only sessions with work to record need a checkpoint; it runs in the background so Pause is instant.
+          const entry = await notes.get(sessionID)
+          if (result.worked || entry.notes || entry.request) void checkpoint(sessionID)
+          return result
         }
         const resume = async (sessionID: string, carryOn = true) => {
           const was = await notes.resume(sessionID)
-          if (was && carryOn) await ctx.session.prompt({ sessionID: sessionID as never, text: resumePrompt(was) } as never)
+          if (was && carryOn) {
+            const due = settings.current().reminders ? await reminders.takeDue(sessionID).catch(() => []) : []
+            await ctx.session.prompt({ sessionID: sessionID as never, text: resumePrompt(was, due.map(item => reminderText(item))) } as never)
+          }
           return !!was
         }
+        reminders.start()
         registrations.push(await ctx.command.transform(editor => {
           editor.add({ name: "pause", description: "Pause this session: stop the agent now and keep it stopped until you resume (oc-enhance)", execute: async ({ sessionID }) => { await pause(sessionID) } })
           editor.add({ name: "resume", description: "Resume a paused session; the agent continues from its task notes (oc-enhance)", execute: async ({ sessionID }) => { await resume(sessionID) } })
@@ -287,8 +380,9 @@ export function createPlugin(): Plugin.Plugin {
           const entry = await notes.get(sessionID)
           return {
             paused: !!(await notes.pausedBy(sessionID)),
-            ...(entry.paused && { pausedAt: entry.paused.at, interrupted: entry.paused.interrupted, ...(entry.paused.background?.length && { background: entry.paused.background }) }),
-            ...(entry.notes && { notes: entry.notes }), ...(entry.request && { request: entry.request }),
+            ...(entry.paused && { pausedAt: entry.paused.at, interrupted: entry.paused.interrupted, ...(entry.paused.background?.length && { background: entry.paused.background }), ...(entry.paused.checkpoint && { checkpoint: entry.paused.checkpoint }) }),
+            ...(entry.notes && { notes: entry.notes }), ...(entry.saved && { saved: entry.saved }), ...(entry.request && { request: entry.request }),
+            reminders: (await reminders.list(sessionID).catch(() => [])).map(item => ({ id: item.id, message: item.message, due: item.due, ...(item.every && { every: item.every }) })),
           }
         }
         const state = async (sessionID?: string): Promise<StateView> => ({
@@ -310,6 +404,7 @@ export function createPlugin(): Plugin.Plugin {
           clearIndexes: async () => { await clearIndexes(indexes); await clearIndexes(join(data, "search", "home")); return state() },
           pause: async (input: unknown) => { const id = sessionInput(input); await pause(id); return sessionView(id) },
           resume: async (input: unknown) => { const id = sessionInput(input); await resume(id, !(record(input) && input.continue === false)); return sessionView(id) },
+          cancelReminder: async (input: unknown) => { const id = sessionInput(input); if (record(input) && typeof input.id === "string") await reminders.cancel(id, input.id); return sessionView(id) },
         } as never))
       } catch (error) {
         warn("disabled", error)

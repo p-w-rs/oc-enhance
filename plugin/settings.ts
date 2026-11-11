@@ -12,6 +12,8 @@ export const dataDirectory = (configured?: string) => configured ?? join(process
 export interface Settings {
   /** Task notes, Pause/Resume and handoffs. */
   readonly notes: boolean
+  /** The reminder tool: agents set timers that wake the session later. */
+  readonly reminders: boolean
   /** read_document for Word, Excel, PowerPoint and PDF. */
   readonly documents: boolean
   /** search_project. */
@@ -24,8 +26,8 @@ export interface Settings {
   readonly pixi: boolean
 }
 
-export const DEFAULTS: Settings = { notes: true, documents: true, search: true, terminals: true, terminalWrite: "allow", pixi: true }
-const BOOLEANS = ["notes", "documents", "search", "terminals", "pixi"] as const
+export const DEFAULTS: Settings = { notes: true, reminders: true, documents: true, search: true, terminals: true, terminalWrite: "allow", pixi: true }
+const BOOLEANS = ["notes", "reminders", "documents", "search", "terminals", "pixi"] as const
 
 export function normalizeSettings(raw: unknown, base: Settings = DEFAULTS): Settings {
   const value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {}

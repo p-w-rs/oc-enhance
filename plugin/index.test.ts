@@ -13,7 +13,7 @@ const scratch = async () => { const dir = await mkdtemp(join(tmpdir(), "oce-"));
 
 type Tool = { name: string; execute: (input: unknown, context: unknown) => Promise<{ content: string }> }
 
-async function host(options: { deny?: (action: string, path: string) => boolean } = {}) {
+async function host(options: { deny?: (action: string, path: string) => boolean; checkpoint?: string } = {}) {
   const data = await scratch()
   const project = await scratch()
   const transforms: ((editor: any) => void)[] = []
@@ -24,6 +24,8 @@ async function host(options: { deny?: (action: string, path: string) => boolean 
   const commands = new Map<string, (input: any) => Promise<void>>()
   const asked: { action: string; resources: string[] }[] = []
   const prompts: { sessionID: string; text: string }[] = []
+  const synthetic: { sessionID: string; text: string }[] = []
+  const generated: { sessionID: string; prompt: string }[] = []
   const interrupted: string[] = []
   const store = new Map<string, unknown>()
   const parents: Record<string, string | undefined> = { s: undefined, sub: "s", other: undefined }
@@ -33,12 +35,17 @@ async function host(options: { deny?: (action: string, path: string) => boolean 
   const hook = async (name: string, callback: any) => { (hooks[name] ??= []).push(callback); return { dispose: async () => {} } }
   const ctx = {
     options: { dataDirectory: data },
-    storage: { get: async (k: string) => structuredClone(store.get(k)), set: async (k: string, v: unknown) => { store.set(k, structuredClone(v)) }, remove: async (k: string) => { store.delete(k) } },
+    storage: {
+      get: async (k: string) => structuredClone(store.get(k)), set: async (k: string, v: unknown) => { store.set(k, structuredClone(v)) }, remove: async (k: string) => { store.delete(k) },
+      scan: async ({ prefix }: { prefix: string }) => ({ entries: [...store].filter(([k]) => k.startsWith(prefix)).map(([key, value]) => ({ key, value: structuredClone(value) })) }),
+    },
     session: {
       get: async ({ sessionID }: { sessionID: string }) => ({ id: sessionID, parentID: parents[sessionID], location: { directory: project } }),
       list: async ({ parentID }: { parentID: string }) => ({ data: Object.keys(parents).filter(id => parents[id] === parentID).map(id => ({ id, parentID })) }),
       interrupt: async ({ sessionID }: { sessionID: string }) => { interrupted.push(sessionID) },
       prompt: async (input: { sessionID: string; text: string }) => { prompts.push(input) },
+      synthetic: async (input: { sessionID: string; text: string }) => { synthetic.push(input) },
+      generate: async (input: { sessionID: string; prompt: string }) => { generated.push(input); return { text: options.checkpoint ?? '{"goal": "Train", "progress": "data ready", "next": "rerun training"}' } },
       hook: (name: string, callback: any) => hook(`session.${name}`, callback),
     },
     permission: {
@@ -67,8 +74,10 @@ async function host(options: { deny?: (action: string, path: string) => boolean 
     return (await tool.execute(input, { sessionID, agent: "build", messageID: "m", id: `c${++n}`, signal: new AbortController().signal, progress: async () => {} })).content
   }
   const run = async (name: string, input: any) => { for (const callback of hooks[name] ?? []) await callback(input) }
-  const context = async (sessionID = "s") => { const input = { sessionID, system: [] as { text: string }[], tools: Object.fromEntries([...tools.keys()].map(k => [k, {}])) }; await run("session.context", input); return input.system.map(part => part.text).join("\n---\n") }
-  return { data, project, tools, skills, asked, prompts, interrupted, commands, call, run, context, cleanup, rpc: () => rpc }
+  const request = async (sessionID = "s") => { const input = { sessionID, system: [] as { text: string }[], messages: [] as { content: { text: string }[] }[], tools: Object.fromEntries([...tools.keys()].map(k => [k, {}])) }; await run("session.context", input); return input }
+  const context = async (sessionID = "s") => (await request(sessionID)).system.map(part => part.text).join("\n---\n")
+  const tail = async (sessionID = "s") => (await request(sessionID)).messages.map(message => message.content.map(part => part.text).join("")).join("\n")
+  return { data, project, tools, skills, asked, prompts, synthetic, generated, interrupted, commands, call, run, context, tail, cleanup, rpc: () => rpc }
 }
 
 test("identity and options", () => {
@@ -79,13 +88,15 @@ test("identity and options", () => {
 
 test("all features on by default: tools, pixi skill and guidance; turning features off removes them", async () => {
   const h = await host()
-  assert.deepEqual([...h.tools.keys()].sort(), ["read_document", "save_task_notes", "search_project", "task_handoff", "terminal_list", "terminal_open", "terminal_read", "terminal_write"])
+  assert.deepEqual([...h.tools.keys()].sort(), ["read_document", "reminder", "save_task_notes", "search_project", "task_handoff", "terminal_list", "terminal_open", "terminal_read", "terminal_write"])
   assert.deepEqual(h.skills.map(s => s.id), ["pixi"])
   const system = await h.context()
   assert.match(system, /Task notes \(oc-enhance\)/)
   assert.match(system, /Python only through Pixi/)
-  await h.rpc().update({ documents: false, terminals: false, pixi: false })
+  assert.match(system, /Reminders \(oc-enhance\)/)
+  await h.rpc().update({ documents: false, terminals: false, pixi: false, reminders: false })
   assert.deepEqual([...h.tools.keys()].sort(), ["save_task_notes", "search_project", "task_handoff"])
+  assert.doesNotMatch(await h.context(), /Reminders/)
   assert.deepEqual(h.skills, [])
   assert.doesNotMatch(await h.context(), /Pixi/)
   const state = await h.rpc().state({})
@@ -140,8 +151,14 @@ test("pause stops the session tree and holds it; resume continues; a new message
   await assert.rejects(h.run("tool.execute.before", { sessionID: "sub", id: "t2", tool: "read" }), /Paused by the user/)
   await assert.rejects(h.context("s"), /Paused by the user/)
   await h.run("tool.execute.before", { sessionID: "other", id: "t3", tool: "read" })
+  await new Promise(resolve => setTimeout(resolve, 1800))
+  assert.equal(h.generated.length, 1, "the pause asks the session's model for a notes checkpoint")
+  const paused = await h.rpc().session({ sessionID: "s" })
+  assert.equal(paused.checkpoint, "saved")
+  assert.equal(paused.notes.next, "rerun training")
+  assert.equal(paused.saved.by, "checkpoint")
   assert.equal((await h.rpc().resume({ sessionID: "s" })).paused, false)
-  assert.match(h.prompts.at(-1)!.text, /Resume the paused task[\s\S]*Interrupted by the pause: shell/)
+  assert.match(h.prompts.at(-1)!.text, /Resume the paused task[\s\S]*notes were updated when the pause started[\s\S]*Interrupted by the pause: shell/)
   await h.run("tool.execute.before", { sessionID: "sub", id: "t4", tool: "read" })
 
   await h.commands.get("pause")!({ sessionID: "s" })
@@ -176,4 +193,41 @@ test("a broken data directory disables the plugin without throwing", async () =>
     await cleanup()
   } finally { console.warn = original }
   assert.match(warnings.join("\n"), /\[oc-enhance\] disabled/)
+})
+
+test("pause checkpoint failure keeps the old notes and still pauses", async () => {
+  const h = await host({ checkpoint: "sorry, no" })
+  await h.call("save_task_notes", { goal: "Keep me", progress: "p", next: "n" })
+  const view = await h.rpc().pause({ sessionID: "s" })
+  assert.equal(view.paused, true)
+  await new Promise(resolve => setTimeout(resolve, 9500))
+  const after = await h.rpc().session({ sessionID: "s" })
+  assert.equal(after.checkpoint, "failed")
+  assert.equal(after.notes.goal, "Keep me")
+  await h.cleanup()
+})
+
+test("notes nudge goes at the end of the context, after 4 calls without notes and after compaction", async () => {
+  const h = await host()
+  for (let i = 0; i < 4; i++) await h.run("tool.execute.before", { sessionID: "n", id: `x${i}`, tool: "read", input: {} })
+  assert.match(await h.tail("n"), /4 tool calls in this task without saving task notes/)
+  assert.doesNotMatch(await h.context("n"), /without saving/, "not in the cached system prefix")
+  await h.call("save_task_notes", { goal: "g", progress: "p", next: "n" }, "n")
+  assert.equal(await h.tail("n"), "")
+  await h.run("session.compaction", { sessionID: "n" })
+  assert.match(await h.tail("n"), /just compacted/)
+  await h.cleanup()
+})
+
+test("reminder tool: set, list, cancel; due reminders wake the session; a paused session gets them on resume", async () => {
+  const h = await host()
+  assert.match(await h.call("reminder", { action: "set", minutes: 30, message: "check the training run" }), /Reminder r\w+ set for .*in 30 min/)
+  assert.match(await h.call("reminder", { action: "list" }), /in 30 min: check the training run/)
+  const view = await h.rpc().session({ sessionID: "s" })
+  assert.equal(view.reminders.length, 1)
+  const id = view.reminders[0].id
+  assert.match(await h.call("reminder", { action: "cancel", id }), /Cancelled/)
+  assert.equal((await h.rpc().session({ sessionID: "s" })).reminders.length, 0)
+  await assert.rejects(h.call("reminder", { action: "set", minutes: 5 }), /message is required/)
+  await h.cleanup()
 })
