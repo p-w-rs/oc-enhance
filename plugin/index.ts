@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { fileURLToPath } from "node:url"
 import { Backend } from "./backend.js"
 import { documentKind, extractDocument, readBounded, render } from "./documents.js"
-import { handoffMarkdown, handoffName, NOTES_GUIDE, notesText, parseHandoff, parseNotes, PausedError, RESUME_PROMPT, TaskNotes, type KV } from "./notes.js"
+import { describeCall, handoffMarkdown, handoffName, NOTES_GUIDE, notesNudge, notesText, parseHandoff, parseNotes, PausedError, resumePrompt, TaskNotes, type KV } from "./notes.js"
 import { EnhanceRpc, type StateView } from "./rpc.js"
 import { clearIndexes, folderSize, ProjectIndex } from "./search.js"
 import { dataDirectory, PLUGIN_ID, SettingsStore, VERSION } from "./settings.js"
@@ -211,9 +211,25 @@ export function createPlugin(): Plugin.Plugin {
         registrations.push(await ctx.tool.hook("execute.before", async input => {
           if (!settings.current().notes) return
           if (await notes.pausedBy(input.sessionID).catch(() => undefined)) throw new PausedError()
-          notes.started(input.sessionID, input.id, input.tool)
+          notes.started(input.sessionID, input.id, describeCall(input.tool, input.input))
         }))
-        registrations.push(await ctx.tool.hook("execute.after", async input => { notes.finished(input.sessionID, input.id) }))
+        registrations.push(await ctx.tool.hook("execute.after", async input => {
+          notes.finished(input.sessionID, input.id)
+          // A shell moved to the background keeps running during a pause: remember it so Pause and Resume can say so.
+          if (input.status === "completed" && /^(shell|bash)$/.test(input.tool)) {
+            const text = JSON.stringify((input as { result?: unknown }).result ?? "")
+            const shell = /moved to the background \(shell ID: (sh_[A-Za-z0-9]+)\)/.exec(text)?.[1]
+            if (shell) notes.backgrounded(input.sessionID, shell, describeCall(input.tool, input.input))
+          }
+        }))
+        // Background shells that end are no longer "still running".
+        void (async () => {
+          try {
+            for await (const event of ctx.event.subscribe({ types: ["session.shell.ended"] } as never) as AsyncIterable<{ data?: { shell?: { id?: string } } }>) {
+              if (event.data?.shell?.id) notes.shellEnded(event.data.shell.id)
+            }
+          } catch {}
+        })()
         registrations.push(await ctx.session.hook("prompt", async input => {
           if (!settings.current().notes) return
           try {
@@ -232,8 +248,12 @@ export function createPlugin(): Plugin.Plugin {
             if (!input.tools || "save_task_notes" in input.tools) {
               input.system.push({ type: "text", text: NOTES_GUIDE } as never)
               try {
-                const saved = notesText(await notes.get(input.sessionID))
+                const entry = await notes.get(input.sessionID)
+                const saved = notesText(entry)
                 if (saved) input.system.push({ type: "text", text: `Current task notes (saved earlier in this session; the user's latest message takes precedence):\n${saved}` } as never)
+                const count = notes.callsSinceNotes(input.sessionID)
+                const nudge = notesNudge(!!entry.notes, count.total, count.sinceNotes)
+                if (nudge) input.system.push({ type: "text", text: nudge } as never)
               } catch {}
             }
           }
@@ -246,8 +266,8 @@ export function createPlugin(): Plugin.Plugin {
         }
         const resume = async (sessionID: string, carryOn = true) => {
           const was = await notes.resume(sessionID)
-          if (was && carryOn) await ctx.session.prompt({ sessionID: sessionID as never, text: RESUME_PROMPT } as never)
-          return was
+          if (was && carryOn) await ctx.session.prompt({ sessionID: sessionID as never, text: resumePrompt(was) } as never)
+          return !!was
         }
         registrations.push(await ctx.command.transform(editor => {
           editor.add({ name: "pause", description: "Pause this session: stop the agent now and keep it stopped until you resume (oc-enhance)", execute: async ({ sessionID }) => { await pause(sessionID) } })
@@ -267,7 +287,7 @@ export function createPlugin(): Plugin.Plugin {
           const entry = await notes.get(sessionID)
           return {
             paused: !!(await notes.pausedBy(sessionID)),
-            ...(entry.paused && { pausedAt: entry.paused.at, interrupted: entry.paused.interrupted }),
+            ...(entry.paused && { pausedAt: entry.paused.at, interrupted: entry.paused.interrupted, ...(entry.paused.background?.length && { background: entry.paused.background }) }),
             ...(entry.notes && { notes: entry.notes }), ...(entry.request && { request: entry.request }),
           }
         }

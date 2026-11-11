@@ -15,7 +15,8 @@ export interface SessionNotes {
   notes?: Notes
   /** The user's first request, kept automatically until the agent saves notes. */
   request?: string
-  paused?: { at: number; interrupted: string[] }
+  /** interrupted: what was running when paused; background: shells the agent had left running in the background. */
+  paused?: { at: number; interrupted: string[]; background?: string[] }
   updated?: number
 }
 
@@ -122,8 +123,28 @@ export interface SessionHost {
   interrupt(sessionID: string): Promise<void>
 }
 
+/**
+ * Live activity, shared by every plugin instance in this OpenCode process (OpenCode creates one instance per project
+ * location, and the Pause button may reach a different one than the instance that saw the tool start).
+ */
+interface Activity {
+  running: Map<string, Map<string, string>>
+  background: Map<string, Map<string, string>>
+  calls: Map<string, { total: number; atNotes: number }>
+}
+const ACTIVITY = Symbol.for("oc-enhance.activity.v1")
+const activity: Activity = ((globalThis as Record<symbol, unknown>)[ACTIVITY] ??= { running: new Map(), background: new Map(), calls: new Map() }) as Activity
+
+/** A short description of a tool call for people: "shell: sleep 45 && …", "write: notes.txt". */
+export function describeCall(tool: string, input: unknown): string {
+  const value = input && typeof input === "object" ? input as Record<string, unknown> : {}
+  const detail = [value.command, value.description, value.path, value.filePath, value.url, value.query, value.prompt].find(item => typeof item === "string" && item.trim()) as string | undefined
+  const short = detail?.replace(/\s+/g, " ").trim()
+  return short ? `${tool}: ${short.length > 80 ? `${short.slice(0, 80)}…` : short}` : tool
+}
+
 export class TaskNotes {
-  readonly #running = new Map<string, Map<string, string>>()
+  readonly #running = activity.running
   readonly #parents = new Map<string, string | undefined>()
   #queue: Promise<unknown> = Promise.resolve()
   constructor(private readonly kv: KV, private readonly host: SessionHost) {}
@@ -149,7 +170,11 @@ export class TaskNotes {
     })
   }
 
-  save(sessionID: string, notes: Notes) { return this.#update(sessionID, entry => { entry.notes = notes }) }
+  save(sessionID: string, notes: Notes) {
+    const count = activity.calls.get(sessionID)
+    if (count) count.atNotes = count.total
+    return this.#update(sessionID, entry => { entry.notes = notes })
+  }
   remember(sessionID: string, request: string) {
     return this.#update(sessionID, entry => { if (!entry.notes && !entry.request && request.trim()) entry.request = request.trim().slice(0, 500) })
   }
@@ -171,29 +196,48 @@ export class TaskNotes {
     return undefined
   }
 
-  started(sessionID: string, callID: string, tool: string) {
+  started(sessionID: string, callID: string, label: string) {
     let calls = this.#running.get(sessionID)
     if (!calls) this.#running.set(sessionID, calls = new Map())
-    calls.set(callID, tool)
+    calls.set(callID, label)
+    const count = activity.calls.get(sessionID) ?? { total: 0, atNotes: 0 }
+    count.total++
+    activity.calls.set(sessionID, count)
   }
   finished(sessionID: string, callID: string) { this.#running.get(sessionID)?.delete(callID) }
 
+  /** A shell the agent moved to the background keeps running while paused; remember it so Pause can say so. */
+  backgrounded(sessionID: string, shellID: string, command: string) {
+    let shells = activity.background.get(sessionID)
+    if (!shells) activity.background.set(sessionID, shells = new Map())
+    shells.set(shellID, command)
+  }
+  shellEnded(shellID: string) { for (const shells of activity.background.values()) shells.delete(shellID) }
+
+  /** Tool calls since the notes were last saved (undefined: none yet in this process). */
+  callsSinceNotes(sessionID: string): { total: number; sinceNotes: number } {
+    const count = activity.calls.get(sessionID) ?? { total: 0, atNotes: 0 }
+    return { total: count.total, sinceNotes: count.total - count.atNotes }
+  }
+
   /** Saves the pause first, then interrupts the session and its subagents. */
-  async pause(sessionID: string): Promise<{ interrupted: string[]; failed: string[] }> {
+  async pause(sessionID: string): Promise<{ interrupted: string[]; background: string[]; failed: string[] }> {
     const sessions = [sessionID]
     for (let index = 0; index < sessions.length && sessions.length < 200; index++) {
       for (const child of await this.host.children(sessions[index]!).catch(() => [] as string[])) if (!sessions.includes(child)) sessions.push(child)
     }
-    const interrupted = sessions.flatMap(id => [...(this.#running.get(id)?.values() ?? [])])
-    await this.#update(sessionID, entry => { entry.paused = { at: Date.now(), interrupted } })
+    const interrupted = sessions.flatMap(id => [...(this.#running.get(id)?.values() ?? [])]).filter(label => !/^save_task_notes/.test(label))
+    const background = sessions.flatMap(id => [...(activity.background.get(id)?.values() ?? [])])
+    await this.#update(sessionID, entry => { entry.paused = { at: Date.now(), interrupted, ...(background.length && { background }) } })
     const failed: string[] = []
     await Promise.all(sessions.map(async id => { try { await this.host.interrupt(id) } catch { failed.push(id) } }))
-    return { interrupted, failed }
+    return { interrupted, background, failed }
   }
 
-  async resume(sessionID: string): Promise<boolean> {
-    let was = false
-    await this.#update(sessionID, entry => { was = !!entry.paused; delete entry.paused })
+  /** Clears the pause; returns what the pause recorded (undefined if the session was not paused). */
+  async resume(sessionID: string): Promise<SessionNotes["paused"]> {
+    let was: SessionNotes["paused"]
+    await this.#update(sessionID, entry => { was = entry.paused; delete entry.paused })
     return was
   }
 
@@ -201,3 +245,20 @@ export class TaskNotes {
 }
 
 export const RESUME_PROMPT = "Resume the paused task. Check your task notes and the current state of the files first; work that was interrupted may be incomplete, so verify it instead of assuming it finished. Do not blindly repeat commands that change things."
+
+/** The message that continues a paused session: what was interrupted, and what kept running in the background. */
+export function resumePrompt(paused: SessionNotes["paused"]): string {
+  const minutes = paused ? Math.round((Date.now() - paused.at) / 60000) : 0
+  return [
+    RESUME_PROMPT,
+    paused?.interrupted.length ? `Interrupted by the pause${minutes ? ` ${minutes} min ago` : ""}: ${[...new Set(paused.interrupted)].join("; ")}. Check whether each one completed (look at the files or outputs it should have produced) before redoing it.` : "",
+    paused?.background?.length ? `These background commands were left running during the pause and may have finished meanwhile: ${paused.background.join("; ")}. Check their output rather than starting them again.` : "",
+  ].filter(Boolean).join("\n")
+}
+
+/** A nudge when a long task has no (or stale) notes; undefined when notes are fine. */
+export function notesNudge(hasNotes: boolean, total: number, sinceNotes: number): string | undefined {
+  if (!hasNotes && total >= 6) return `You have made ${total} tool calls in this task without saving task notes. Call save_task_notes now (goal, done so far, next step), so the work survives a pause, a restart or a handoff.`
+  if (hasNotes && sinceNotes >= 15) return `Your task notes are ${sinceNotes} tool calls old. Update them with save_task_notes (done so far, next step) at this milestone.`
+  return undefined
+}

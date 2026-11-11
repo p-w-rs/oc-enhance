@@ -141,7 +141,9 @@ export default Plugin.define({
           rows: [
             { id: "resume", label: "Resume (agent continues)", icon: "enter", run: () => void act(session, "resume") },
             ...(view.notes ? [{ id: "next", label: `Next: ${view.notes.next || view.notes.goal}`.slice(0, 120) }] : []),
-            ...(view.pausedAt ? [{ id: "when", label: `Paused ${ago(view.pausedAt)}${view.interrupted?.length ? `; stopped: ${[...new Set(view.interrupted)].join(", ")}` : ""}`.slice(0, 160) }] : []),
+            ...(view.pausedAt ? [{ id: "when", label: `Paused ${ago(view.pausedAt)}` }] : []),
+            ...[...new Set(view.interrupted ?? [])].slice(0, 4).map((label, index) => ({ id: `stopped-${index}`, label: `Stopped: ${label}`.slice(0, 120) })),
+            ...(view.background ?? []).slice(0, 4).map((label, index) => ({ id: `bg-${index}`, label: `Still running in the background: ${label}`.slice(0, 120), tone: "warning" as const })),
           ],
         }
         return { label: busy()[session.key] ? "Pausing…" : "Pause", icon: "stop", title: "Pause: stop the agent now and keep it stopped until you resume", run: () => void act(session, "pause") }

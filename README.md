@@ -39,11 +39,14 @@ Updating: `git pull && pixi run --locked install`. Settings, indexes and the sea
 
 - Agents call `save_task_notes` when they start multi-step work and after milestones. Until they do, the user's first
   request is kept as the goal. The notes go into the model's context on every turn, so after a pause, a restart, a
-  compaction or a long break the agent knows what it was doing.
+  compaction or a long break the agent knows what it was doing. If a task grows (6+ tool calls) without notes, or the
+  notes fall 15 calls behind, the agent is reminded to save them.
 - **Pause** (above the message box, `/pause`, or ⌘⇧P) interrupts the session and its subagents and holds them: no new
-  tool calls or model requests until you **Resume** (the same button, `/resume`, ⌘⇧R) or send a new message. Resume
-  asks the agent to check the notes and the files first, because interrupted work may be incomplete. Other sessions
-  are never affected; your own terminal commands are not paused.
+  tool calls or model requests until you **Resume** (the same button, `/resume`, ⌘⇧R) or send a new message. The
+  running command is stopped; the pause survives an app restart. Pause shows what it stopped ("shell: make train …")
+  and any background shells the agent started, which keep running. Resume tells the agent exactly that, and asks it
+  to check the notes and the files before redoing anything, because interrupted work may be incomplete. Other
+  sessions are never affected; your own terminal commands are not paused.
 - **Handoffs**: `task_handoff export` writes the notes to `.opencode/handoffs/<name>.md` in the project. Commit it;
   a colleague with oc-enhance continues with "continue the handoff in .opencode/handoffs/<name>.md" (or
   `task_handoff import`), and anyone can simply read it. Handoffs are summaries, not instructions to execute.

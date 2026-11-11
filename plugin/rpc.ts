@@ -29,6 +29,7 @@ export interface SessionView {
   readonly paused: boolean
   readonly pausedAt?: number
   readonly interrupted?: readonly string[]
+  readonly background?: readonly string[]
   readonly notes?: Notes
   readonly request?: string
 }
