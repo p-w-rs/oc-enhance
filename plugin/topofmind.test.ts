@@ -20,7 +20,7 @@ test("capability index: one line per tool and skill, without the skill tool itse
 })
 
 test("recent: latest real user message; tools used since then; reminders and wake-ups are not user messages", () => {
-  const r = recent([user("first"), call("read"), user("see docs/spec.docx please"), call("skill", { name: "pixi" }), { role: "user", content: [{ type: "text", text: "<reminder id=\"r1\">check</reminder>" }] }])
+  const r = recent([user("first"), call("read"), user("see docs/spec.docx please"), call("skill", { name: "pixi" }), { role: "user", content: [{ type: "text", text: "<reminder id=\"r1\">check</reminder>" }] }, user("<subagent sessionID=\"x\" state=\"completed\">report written</subagent>")])
   assert.equal(r.user, "see docs/spec.docx please")
   assert.deepEqual([...r.used].sort(), ["skill", "skill:pixi"])
   assert.equal(r.calls, 2)
@@ -34,6 +34,8 @@ test("rules fire for the moments they describe and not otherwise", () => {
   assert.deepEqual(names("Where is the retry logic implemented?"), ["search_project"])
   assert.deepEqual(names("Make a contour plot heatmap figure of this surface with gnuplot"), ["skill:gnuplot"])
   assert.deepEqual(names("Rename the variable x to y in main.ts"), [])
+  assert.deepEqual(names("Fix the pixi.toml and write the report"), [], "a plain skill name mentioned in passing is not a cue")
+  assert.deepEqual(names("load the pixi skill please"), ["skill:pixi"])
   assert.deepEqual(names("Summarize docs/requirements.docx", [call("read_document")]), [], "already used for this message")
   assert.deepEqual(ruleCues(capabilityIndex({ read: {} }), recent([user("open spec.docx")])), [], "only capabilities the session has")
 })

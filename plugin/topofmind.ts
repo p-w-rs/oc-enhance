@@ -47,7 +47,7 @@ export function recent(messages: unknown): Recent {
   for (let index = list.length - 1; index >= 0; index--) {
     const message = list[index]!
     // Our own cues and nudges come as system messages; plugin reminders and wake-ups are user-role text too.
-    if (message.role === "user" && textOf(message.content).trim() && !/^\s*<(reminder|shell|system-reminder)\b/.test(textOf(message.content))) { lastUser = index; break }
+    if (message.role === "user" && textOf(message.content).trim() && !/^\s*<(reminder|shell|subagent|system-reminder)\b/.test(textOf(message.content))) { lastUser = index; break }
   }
   const used = new Set<string>()
   let calls = 0
@@ -93,7 +93,11 @@ export function ruleCues(index: readonly Capability[], recent: Recent): Cue[] {
     const lower = recent.user.toLowerCase()
     for (const skill of index.filter(item => item.kind === "skill" && !recent.used.has(item.name) && !cues.some(cue => cue.name === item.name))) {
       const name = skill.name.slice("skill:".length)
-      const named = name.length > 3 && new RegExp(`\\b${name.replace(/[-_]/g, "[- _]?")}\\b`, "i").test(lower)
+      // A plain word ("report", "browser") is only a cue when the user asks to use it ("with gnuplot", "the pixi
+      // skill"); distinctive names (with a hyphen or digit, e.g. "ml-metrics") count when mentioned at all.
+      const pattern = name.replace(/[-_]/g, "[- _]?")
+      const distinctive = /[-_\d]/.test(name)
+      const named = name.length > 3 && (distinctive ? new RegExp(`\\b${pattern}\\b`, "i").test(lower) : new RegExp(`\\b(${pattern} skill|skill ${pattern}|(with|using|use|via) (the )?${pattern})\\b(?![.\\w])`, "i").test(lower))
       const overlap = [...WORDS(skill.summary)].filter(word => word.length >= 5 && !GENERIC.has(word) && said.has(word)).length
       if (named || overlap >= 3) cues.push({ name: skill.name, why: `load the ${name} skill: ${skill.summary.slice(0, 120)}`, source: "rule" })
     }
