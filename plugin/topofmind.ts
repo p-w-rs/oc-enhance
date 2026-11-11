@@ -110,7 +110,7 @@ export function cueText(cues: readonly Cue[]): string {
 export function modelPrompt(index: readonly Capability[], recent: Recent): string {
   return [
     "You help a coding agent remember its capabilities in a long session. Below are the capabilities it has and the latest part of the conversation.",
-    "Pick at most 3 capabilities that the agent will probably need in its NEXT steps and might forget or misuse (e.g. using sleep instead of a reminder, reading a .docx with the plain read tool, answering a citation question from memory, not loading a relevant skill). Do not pick basic tools the agent obviously uses already (read, edit, shell, grep, glob, write). Pick none if nothing stands out.",
+    "Never pick save_task_notes (it has its own reminder). Pick at most 3 capabilities that the agent will probably need in its NEXT steps and might forget or misuse (e.g. using sleep instead of a reminder, reading a .docx with the plain read tool, answering a citation question from memory, not loading a relevant skill). Do not pick basic tools the agent obviously uses already (read, edit, shell, grep, glob, write). Pick none if nothing stands out.",
     'Answer with JSON only: {"cues": [{"name": "<exact capability name>", "why": "<under 20 words, specific to this moment>"}]}',
     "",
     "Capabilities:",
@@ -128,7 +128,8 @@ export function parseModelCues(text: string, index: readonly Capability[]): Cue[
   let value: { cues?: unknown }
   try { value = JSON.parse(text.slice(start, end + 1)) } catch { return [] }
   const names = new Set(index.map(item => item.name))
-  const basic = new Set(["read", "edit", "write", "shell", "bash", "grep", "glob", "webfetch", "websearch", "question"])
+  // Basic tools, and ones with their own reminders (notes), are never cues.
+  const basic = new Set(["read", "edit", "write", "shell", "bash", "grep", "glob", "webfetch", "websearch", "question", "save_task_notes", "todowrite"])
   return (Array.isArray(value.cues) ? value.cues : []).flatMap(item => {
     const cue = item as { name?: unknown; why?: unknown }
     let name = typeof cue.name === "string" ? cue.name.trim() : ""

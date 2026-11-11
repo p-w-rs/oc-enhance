@@ -242,3 +242,16 @@ test("top of mind: a cue in the context tail for the moment; off in settings rem
   assert.equal((await h.rpc().state({})).settings.topOfMindModel, "opencode-go/fast")
   await h.cleanup()
 })
+
+test("notes: only goal is required; a failing save does not trigger a reminder loop; reminders are spaced", async () => {
+  const h = await host()
+  assert.match(await h.call("save_task_notes", { goal: "Just a goal" }, "q"), /saved/)
+  for (let i = 0; i < 12; i++) await h.run("tool.execute.before", { sessionID: "loop", id: `s${i}`, tool: "save_task_notes", input: {} })
+  assert.equal(await h.tail("loop"), "", "save attempts alone never trigger the reminder")
+  for (let i = 0; i < 4; i++) await h.run("tool.execute.before", { sessionID: "sp", id: `w${i}`, tool: "read", input: {} })
+  assert.match(await h.tail("sp"), /without saving task notes/)
+  assert.equal(await h.tail("sp"), "", "not again right away")
+  for (let i = 0; i < 4; i++) await h.run("tool.execute.before", { sessionID: "sp", id: `x${i}`, tool: "read", input: {} })
+  assert.match(await h.tail("sp"), /without saving task notes/, "again after 4 more calls")
+  await h.cleanup()
+})

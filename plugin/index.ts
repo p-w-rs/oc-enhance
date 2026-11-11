@@ -103,7 +103,7 @@ export function createPlugin(): Plugin.Plugin {
                   decisions: { type: "array", maxItems: 20, items: { type: "string", maxLength: 300 } },
                   files: { type: "array", maxItems: 20, items: { type: "string", maxLength: 300 }, description: "Important files, relative to the project" },
                 },
-                required: ["goal", "progress", "next"], additionalProperties: false,
+                required: ["goal"], additionalProperties: false,
               } as never,
               options: { codemode: false },
               execute: async (input, context) => {
@@ -303,8 +303,9 @@ export function createPlugin(): Plugin.Plugin {
                 const saved = notesText(entry)
                 if (saved) input.system.push({ type: "text", text: `Current task notes (saved earlier in this session; the user's latest message takes precedence):\n${saved}` } as never)
                 const count = notes.callsSinceNotes(input.sessionID)
-                const nudge = notesNudge(!!entry.notes, count.total, count.sinceNotes, notes.wasCompacted(input.sessionID))
-                if (nudge) tail.push(nudge)
+                const compacted = notes.wasCompacted(input.sessionID)
+                const nudge = compacted || count.sinceNudge >= 4 ? notesNudge(!!entry.notes, count.total, count.sinceNotes, compacted) : undefined
+                if (nudge) { tail.push(nudge); notes.nudged(input.sessionID) }
               } catch {}
             }
           }

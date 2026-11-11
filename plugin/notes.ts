@@ -138,7 +138,7 @@ interface Activity {
   running: Map<string, Map<string, string>>
   /** session → shell ID → what to show, and the exact command (to find its process). */
   background: Map<string, Map<string, { label: string; command: string }>>
-  calls: Map<string, { total: number; atNotes: number }>
+  calls: Map<string, { total: number; atNotes: number; nudgedAt?: number }>
   /** Sessions whose context was just compacted (the next turn asks for fresh notes). */
   compacted: Set<string>
 }
@@ -217,6 +217,8 @@ export class TaskNotes {
     let calls = this.#running.get(sessionID)
     if (!calls) this.#running.set(sessionID, calls = new Map())
     calls.set(callID, label)
+    // The agent's own attempts to save notes don't count as work without notes (a failed save would otherwise loop).
+    if (/^save_task_notes\b/.test(label)) return
     const count = activity.calls.get(sessionID) ?? { total: 0, atNotes: 0 }
     count.total++
     activity.calls.set(sessionID, count)
@@ -232,9 +234,15 @@ export class TaskNotes {
   shellEnded(shellID: string) { for (const shells of activity.background.values()) shells.delete(shellID) }
 
   /** Tool calls since the notes were last saved (undefined: none yet in this process). */
-  callsSinceNotes(sessionID: string): { total: number; sinceNotes: number } {
+  callsSinceNotes(sessionID: string): { total: number; sinceNotes: number; sinceNudge: number } {
     const count = activity.calls.get(sessionID) ?? { total: 0, atNotes: 0 }
-    return { total: count.total, sinceNotes: count.total - count.atNotes }
+    return { total: count.total, sinceNotes: count.total - count.atNotes, sinceNudge: count.nudgedAt === undefined ? Infinity : count.total - count.nudgedAt }
+  }
+  /** Records that the agent was just reminded about its notes (reminders are spaced at least 4 calls apart). */
+  nudged(sessionID: string) {
+    const count = activity.calls.get(sessionID) ?? { total: 0, atNotes: 0 }
+    count.nudgedAt = count.total
+    activity.calls.set(sessionID, count)
   }
 
   /**
