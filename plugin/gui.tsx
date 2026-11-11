@@ -141,8 +141,13 @@ export default Plugin.define({
       finally { setBusy(previous => ({ ...previous, [session.key]: false })) }
     }
     const until = (due: number) => { const minutes = Math.round((due - Date.now()) / 60000); return minutes <= 0 ? "due now" : minutes < 60 ? `in ${minutes} min` : `in ${(minutes / 60).toFixed(1)} h` }
-    const reminderRows = (session: MountedSession, view: SessionView) => (view.reminders ?? []).slice(0, 5).map(item => ({
-      id: `reminder-${item.id}`, icon: "notifications" as const, label: `Reminder ${until(item.due)}${item.every ? ` (every ${item.every} min)` : ""}: ${item.message}`.slice(0, 120),
+    // Re-render countdowns every 15 s even when nothing else changes.
+    const [tick, setTick] = createSignal(0)
+    const ticker = setInterval(() => setTick(value => value + 1), 15_000)
+    ctx.signal.addEventListener("abort", () => clearInterval(ticker), { once: true })
+    const reminderRows = (session: MountedSession, view: SessionView) => (view.reminders ?? []).slice(0, 6).map(item => ({
+      id: `reminder-${item.id}`, icon: "notifications" as const, label: item.message.replace(/\s+/g, " ").slice(0, 110),
+      detail: `${until(item.due)}${item.every ? `, every ${item.every} min` : ""} · cancel`,
       run: () => void (async () => {
         try { set(session.key, await session.server.client.rpc(EnhanceRpc).cancelReminder({ sessionID: session.id, id: item.id }, { ...(session.location && { location: session.location }) }) as unknown as SessionView); ctx.toast.show({ title: "Reminder cancelled", variant: "success" }) }
         catch (cause) { ctx.toast.show({ title: "Could not cancel the reminder", description: message(cause), variant: "error" }) }
@@ -154,6 +159,25 @@ export default Plugin.define({
     }, 3000)
     ctx.signal.addEventListener("abort", () => clearInterval(timer), { once: true })
 
+    // A reminder is set: the agent's turn has ended, but it will wake up by itself. Shown beside the app's own
+    // background-work pill, with a countdown, so nobody prompts the agent thinking it stopped.
+    ctx.add(ComposerPill, {
+      id: "reminders", order: 49,
+      show: input => {
+        tick()
+        const session = input.session
+        const view = views()[session.key]
+        if (!view || view === "off" || session.pending || !view.reminders?.length) return undefined
+        const next = [...view.reminders].sort((a, b) => a.due - b.due)[0]!
+        const due = next.due <= Date.now()
+        const label = view.paused && due ? "Reminder waits for Resume" : due ? "Reminder due, waking agent…" : view.reminders.length === 1 ? `Agent wakes ${until(next.due)}` : `${view.reminders.length} reminders · next ${until(next.due)}`
+        return {
+          label, icon: "notifications", tone: "warning",
+          title: `The agent set ${view.reminders.length === 1 ? "a reminder" : `${view.reminders.length} reminders`} and will continue by itself when ${view.reminders.length === 1 ? "it is" : "each is"} due. You don't need to prompt it. Pick one to cancel it.`,
+          rows: reminderRows(session, view),
+        }
+      },
+    })
     ctx.add(ComposerPill, {
       id: "pause", order: 50,
       show: input => {
@@ -169,13 +193,8 @@ export default Plugin.define({
             ...(view.pausedAt ? [{ id: "when", label: `Paused ${ago(view.pausedAt)}${view.checkpoint === "saving" ? " · saving notes…" : view.checkpoint === "saved" ? " · notes saved" : view.checkpoint === "failed" ? " · notes not updated" : ""}` }] : []),
             ...[...new Set(view.interrupted ?? [])].slice(0, 4).map((label, index) => ({ id: `stopped-${index}`, label: `Stopped: ${label}`.slice(0, 120) })),
             ...(view.background ?? []).slice(0, 4).map((label, index) => ({ id: `bg-${index}`, label: `Stopped background: ${label}`.slice(0, 120) })),
-            ...reminderRows(session, view),
             ...(view.topOfMind?.cues ?? []).slice(0, 3).map((cue, index) => ({ id: `cue-${index}`, label: `Top of mind: ${cue.name.replace(/^skill:/, "skill ")} (${cue.why})`.slice(0, 120) })),
           ],
-        }
-        if (view.reminders?.length) return {
-          label: busy()[session.key] ? "Pausing…" : "Pause", icon: "stop", title: "Pause: stop the agent now and keep it stopped until you resume",
-          rows: [{ id: "pause", label: "Pause now", icon: "stop", run: () => void act(session, "pause") }, ...reminderRows(session, view)],
         }
         return { label: busy()[session.key] ? "Pausing…" : "Pause", icon: "stop", title: "Pause: stop the agent now and keep it stopped until you resume", run: () => void act(session, "pause") }
       },
