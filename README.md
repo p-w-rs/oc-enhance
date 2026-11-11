@@ -10,7 +10,6 @@ macOS and Linux; OpenCode 2.2.6+ and Pixi.
 | **Documents** | `read_document`: Word (.docx), Excel (.xlsx), PowerPoint (.pptx) and PDF as text, by paragraph range, sheet, slide or page. OpenCode's own reader handles text, code, images and PDFs, but not Office files. |
 | **Project search** | `search_project`: find where something is described or implemented when you don't know the exact words, across code and documents; one passage per file with its location. Keyword ranking works out of the box; meaning-based ranking after a one-time download. |
 | **Shared terminals** | `terminal_list`, `terminal_read`, `terminal_write`, `terminal_open`: agents use the terminals in the Review pane with you (Desktop). See [shared terminals](docs/terminals.md). |
-| **Machine-learning know-how** | Skills agents load only when a task needs them: `ml-training` (CUDA and ROCm PyTorch environments in Pixi, MLflow tracking, long runs on GPU machines), `ml-deploy` (TensorRT 11 and Jetson: export, ModelOpt quantization, custom TensorRT plugins for new layers, running branches in parallel, a training-to-device optimization checklist) and `gpu-kernels` (Triton, CUDA/HIP, PyTorch custom ops, profiling). They make agents check installed versions and current docs before writing code. |
 | **Pixi know-how** | A `pixi` skill and a one-line reminder: Python only through Pixi (`pixi run --script` for single files, a Pixi workspace for projects), Pixi-managed toolchains preferred for other languages. Guidance only; nothing is blocked. |
 
 ## Install
@@ -86,6 +85,9 @@ Layout: `plugin/index.ts` (server plugin), `plugin/gui.tsx` (Pause pill, command
 `plugin/terminal*.ts`, `skill/pixi/SKILL.md`, `scripts/` (installer, doctor, smoke test).
 
 ### History
+
+1.2: the machine-learning skills moved to [oc-knowhow](https://github.com/p-w-rs/oc-knowhow), together with new data-science, figure and diagram know-how.
+
 
 Versions before 1.0 were called `open-enhance` (macOS only, Python worker). 1.0 is a rewrite in TypeScript: it runs
 on macOS and Linux, needs nothing but Pixi, and drops the experiments that did not help (a Python-blocking shell

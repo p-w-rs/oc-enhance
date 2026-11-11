@@ -25,8 +25,8 @@ export function parseOptions(raw: unknown): EnhanceOptions {
 }
 
 const SKILLS = fileURLToPath(new URL("../skill/", import.meta.url))
-/** Bundled know-how. `pixi` follows the Pixi setting, the others the know-how setting. */
-const SKILL_IDS = ["pixi", "ml-training", "ml-deploy", "gpu-kernels"] as const
+/** Bundled know-how (machine-learning and data-science skills live in oc-knowhow). */
+const SKILL_IDS = ["pixi"] as const
 const PIXI_HINT = "Python only through Pixi: use `pixi run --script file.py` (PEP 723 inline dependencies) for standalone scripts and a Pixi workspace for projects; never call python, pip, uv, conda or venv directly. Prefer Pixi-managed toolchains for other languages too. Load the pixi skill for details."
 const warn = (message: string, error?: unknown) => console.warn(`[${PLUGIN_ID}] ${message}${error ? `: ${error instanceof Error ? error.message : String(error)}` : ""}`)
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value)
@@ -200,7 +200,7 @@ export function createPlugin(): Plugin.Plugin {
           registrations.push(await ctx.skill.transform(editor => {
             const current = settings.current()
             for (const skill of skills) {
-              if (skill.id === "pixi" ? !current.pixi : !current.knowhow) continue
+              if (!current.pixi) continue
               editor.add({ id: skill.id as never, name: skill.id as never, description: skill.description, path: skill.path as never, content: skill.content })
             }
           }))

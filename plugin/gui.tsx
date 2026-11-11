@@ -47,14 +47,14 @@ function SettingsView(props: { ctx: Context; client: () => Client }) {
     catch (cause) { ctx.toast.show({ title: "Enhance", description: message(cause), variant: "error" }) }
     finally { await refresh() }
   }
-  const toggle = (key: "notes" | "documents" | "search" | "terminals" | "pixi" | "knowhow") => (value: boolean) => void act(() => api().update({ [key]: value }))
+  const toggle = (key: "notes" | "documents" | "search" | "terminals" | "pixi") => (value: boolean) => void act(() => api().update({ [key]: value }))
   onMount(() => {
     void refresh()
     // While a download runs, keep the progress current even if the window is in the background.
     const timer = setInterval(() => { if (state()?.search.installing || !state()) void refresh() }, 1500)
     onCleanup(() => clearInterval(timer))
   })
-  const feature = (key: "notes" | "documents" | "search" | "terminals" | "pixi" | "knowhow", title: string, text: string, extra?: () => JSX.Element) => (
+  const feature = (key: "notes" | "documents" | "search" | "terminals" | "pixi", title: string, text: string, extra?: () => JSX.Element) => (
     <div style={card}>
       <ctx.ui.Switch label={title} checked={state()!.settings[key]} onChange={toggle(key)} />
       <span style={muted}>{text}</span>
@@ -90,7 +90,6 @@ function SettingsView(props: { ctx: Context; client: () => Client }) {
         {feature("terminals", "Shared terminals", "Agents can list, read, type into and open terminals in the Review pane (needs OpenCode Desktop to be open). You see everything they type.", () => (
           <ctx.ui.Switch label="Ask before an agent types into a terminal" checked={current().settings.terminalWrite === "ask"} onChange={value => void act(() => api().update({ terminalWrite: value ? "ask" : "allow" }))} />
         ))}
-        {feature("knowhow", "Machine-learning know-how", "Skills agents load when the task needs them: ml-training (Pixi environments for CUDA and ROCm, MLflow tracking, long runs), ml-deploy (TensorRT 11 and Jetson: export, quantization, custom TensorRT plugins, parallel branches, an optimization checklist) and gpu-kernels (Triton, CUDA/HIP, PyTorch custom ops, profiling). They tell agents to check installed versions and current docs first.")}
         {feature("pixi", "Pixi know-how", "Agents are reminded to use Pixi for Python (scripts and projects) and to prefer Pixi-managed toolchains, and get a pixi skill with the details. Nothing is blocked.")}
         <span style={muted}>oc-enhance {current().version} · data in {current().dataDirectory} · settings apply to every session on this computer.</span>
       </>}</Show>
