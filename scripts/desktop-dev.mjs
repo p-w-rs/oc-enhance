@@ -92,7 +92,7 @@ if (command === "start") {
   })
   await new Promise(resolve => provider.listen(0, "127.0.0.1", resolve))
   await writeFile(path.join(profile, "config/opencode/opencode.json"), JSON.stringify({
-    $schema: "https://opencode.ai/config.json", model: "probe/probe", plugins: [{ package: root, options: { dataDirectory: path.join(profile, "oc-enhance") } }],
+    $schema: "https://opencode.ai/config.json", model: "probe/probe", plugins: [{ package: root, options: { dataDirectory: path.join(profile, "oc-enhance") } }, ...(process.env.OC_DEV_EXTRA ? process.env.OC_DEV_EXTRA.split(",").map(pkg => ({ package: pkg, options: { dataDirectory: path.join(profile, path.basename(pkg)) } })) : [])],
     providers: { probe: { package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: `http://127.0.0.1:${provider.address().port}/v1`, apiKey: "synthetic" }, models: { probe: { limit: { context: 32000, output: 1024 }, capabilities: { tools: true, input: ["text"], output: ["text"] } } } } },
   }, null, 2))
   const env = envFor(profile)

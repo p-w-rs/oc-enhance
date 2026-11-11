@@ -78,7 +78,7 @@ function SettingsView(props: { ctx: Context; client: () => Client }) {
       <Show when={!state() && !error()}><ctx.ui.Loader /></Show>
       <Show when={state()}>{current => <>
         {feature("notes", "Task notes, Pause and Resume", "Agents keep short notes (goal, progress, next step) that they see on every turn and are reminded to keep current. Pause above the message box stops the agent, its subagents and the background commands it started, saves a notes checkpoint, and keeps everything stopped until you resume; the agent then continues from its notes. Notes can be handed to a colleague as a file in the project (.opencode/handoffs).")}
-        {feature("reminders", "Reminders", "Adds reminder: agents set timers for themselves (\"in 40 min, check the training run\") and are woken with their message when it is due, even after a restart. A paused session gets its reminders when you resume. They appear under the Pause button, where you can cancel them.")}
+        {feature("reminders", "Reminders", "Adds reminder: agents set timers for themselves (\"in 40 min, check the training run\") and are woken with their message when it is due, even after a restart. A paused session gets its reminders when you resume. A pill above the message box shows when the agent will wake up; click it to see or cancel reminders.")}
         {feature("topOfMind", "Top of mind", "In long chats agents forget what they can do. Before each step they get at most three short cues for the capabilities that moment calls for (a tool for Office files, reminders, the reference library, a matching skill …), chosen from the session's own tools and skills by simple rules and, optionally, by a fast model. Cues go at the end of the context, so prompt caching keeps working.", () => (
           <div style={{ display: "flex", gap: "8px", "align-items": "center", "flex-wrap": "wrap" }}>
             <span style={muted}>Fast model (all sessions): {current().settings.topOfMindModel || "none, rules only"}</span>
@@ -199,13 +199,15 @@ export default Plugin.define({
         return { label: busy()[session.key] ? "Pausing…" : "Pause", icon: "stop", title: "Pause: stop the agent now and keep it stopped until you resume", run: () => void act(session, "pause") }
       },
     })
+    // One shortcut that toggles: ⇧⌘P pauses a running session and resumes a paused one (⇧⌘R is OpenCode's "Toggle review").
     ctx.add(Command, () => {
       const session = ctx.sessions.current()
-      return { id: "pause", title: "Pause agent", group: "Enhance", bind: "mod+shift+p", enabled: !!session && !session.pending, run: () => { const current = ctx.sessions.current(); if (current) void act(current, "pause") } }
-    })
-    ctx.add(Command, () => {
-      const session = ctx.sessions.current()
-      return { id: "resume", title: "Resume paused agent", group: "Enhance", bind: "mod+shift+r", enabled: !!session && !session.pending, run: () => { const current = ctx.sessions.current(); if (current) void act(current, "resume") } }
+      const view = session ? views()[session.key] : undefined
+      const paused = !!view && view !== "off" && view.paused
+      return {
+        id: "pause", title: paused ? "Resume paused agent" : "Pause agent", group: "Enhance", bind: "mod+shift+p", enabled: !!session && !session.pending,
+        run: () => { const current = ctx.sessions.current(); if (!current) return; const now = views()[current.key]; void act(current, now && now !== "off" && now.paused ? "resume" : "pause") },
+      }
     })
 
     ctx.add(SettingsPage, {

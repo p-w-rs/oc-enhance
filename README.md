@@ -46,7 +46,7 @@ Updating: `git pull && pixi run --locked install`. Settings, indexes and the sea
   4 tool calls without notes, when they fall 8 calls behind, and right after the context is compacted (the reminder
   goes at the end of the context, so prompt caching keeps working).
 - **Pause** (above the message box, `/pause`, or ⌘⇧P) interrupts the session and its subagents and holds them: no new
-  tool calls or model requests until you **Resume** (the same button, `/resume`, ⌘⇧R) or send a new message. The
+  tool calls or model requests until you **Resume** (the same button, `/resume`, or ⌘⇧P again) or send a new message. The
   running command and the background commands the agent started are stopped; the pause survives an app restart.
   Right after pausing, the session's own model writes a notes **checkpoint** (what is done, what may be half-finished,
   the exact next step), so Resume starts from fresh notes; if that fails, the previous notes stay. Pause shows what it
