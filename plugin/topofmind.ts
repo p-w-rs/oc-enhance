@@ -91,6 +91,15 @@ const STOP = new Set(("a about above after again against all also am an and any 
 // Skill names that are everyday words: mentioning them is no sign the user means the skill.
 const EVERYDAY = new Set(["arrow", "rerun", "datasets", "diagrams", "report", "browser", "data", "math", "simulation", "polars"])
 const stem = (word: string) => word.length > 5 ? word.replace(/(ations?|ated|ates|ate|ating|ions?|ings?|ers?|ed|es|s)$/, "") : word.length > 4 ? word.replace(/s$/, "") : word
+// Everyday words that skill descriptions happen to contain ("gaps", "release", "review", "high"): they add a little to a
+// score but never count as the distinctive evidence a cue needs.
+const COMMON = new Set(("review everyth gap gaps release releas quality high low point points top bottom mind suggest suggestion " +
+  "status awesome great good bad better worse best really actually useful appropriat lot lots thing things idea ideas consider " +
+  "considering plan plans planning issue issues problem problems question questions answer answers update updat current " +
+  "latest change chang changes ready finish finished start started stop stopped keep working work going goes everything " +
+  "anything something nothing part parts whole full level levels kind kinds type types case cases detail details step " +
+  "steps result results test tested testing system systems process processes support supported option long short large " +
+  "small fast slow simple hard easy common general specific main more less many much few several each every").split(" ").map(word => stem(word)))
 /** Content words of a text, stemmed; hyphenated words count as a whole and as their parts ("isaac-sim", "isaac", "sim"). */
 export function contentWords(text: string): Set<string> {
   const out = new Set<string>()
@@ -118,14 +127,20 @@ export function skillMatches(index: readonly Capability[], message: string, opti
   const lower = message.toLowerCase()
   const n = docs.length
   const scored = docs.map(doc => {
-    let score = 0, matched = 0
-    for (const word of said) if (doc.words.has(word)) { matched++; score += Math.log((n + 1) / df.get(word)!) * (doc.name.has(word) ? 2 : 1) }
+    let score = 0, distinct = 0
+    for (const word of said) if (doc.words.has(word)) {
+      const common = COMMON.has(word) && !doc.name.has(word)
+      const weight = Math.log((n + 1) / df.get(word)!) * (doc.name.has(word) ? 2 : 1) * (common ? 0.5 : 1)
+      score += weight
+      if (weight >= 1.5 && !common) distinct++  // a technical word few skills share
+    }
     // The skill's full name in the message ("odin", "opencv", "isaac-sim") is a strong signal, unless the name is an
     // everyday word ("arrow", "rerun") that people use without meaning the tool.
     const full = doc.skill.name.slice("skill:".length)
-    if (!EVERYDAY.has(full) && new RegExp(`(^|[^a-z0-9-])${full.replace(/[-_]/g, "[- _]?")}(?![a-z0-9-]|\\.[a-z0-9])`, "i").test(lower)) score += 6
-    // One shared word is too little evidence unless it is the name.
-    return { name: doc.skill.name, score: matched >= 2 || score >= 6 ? score : 0 }
+    const named = !EVERYDAY.has(full) && new RegExp(`(^|[^a-z0-9-])${full.replace(/[-_]/g, "[- _]?")}(?![a-z0-9-]|\\.[a-z0-9])`, "i").test(lower)
+    if (named) score += 6
+    // One distinctive word is too little evidence ("release", "gaps" in a meta question) unless it is the name.
+    return { name: doc.skill.name, score: distinct >= 2 || named ? score : 0 }
   }).filter(item => item.score > 0).sort((a, b) => b.score - a.score)
   const threshold = options.threshold ?? 6
   const top = scored[0]?.score ?? 0

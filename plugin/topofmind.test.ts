@@ -56,6 +56,11 @@ test("skill matching: distinctive words of the full description pick the skill; 
   assert.deepEqual(pick("Draw an arrow on the slide"), [], "everyday words that are skill names are not enough")
   assert.deepEqual(pick("Make the CLI print a help message"), [], "generic programming words do not count")
   assert.deepEqual(pick("Fix the typo in the README title"), [])
+  const meta = capabilityIndex({}, [
+    { name: "polars", description: "Dataframes. Lazy queries, join_asof, streaming; GPU engine gaps; review query plans." },
+    { name: "odin", description: "The Odin language. Monthly releases, compiler flags, high performance." },
+  ])
+  assert.deepEqual(skillMatches(meta, "Review everything for release quality and fill any gaps; any high quality suggestions?"), [], "everyday planning words are not evidence")
   assert.ok(contentWords("Isaac-Sim calibrations").has("isaac-sim") && contentWords("Isaac-Sim").has("isaac") && contentWords("calibrations").has("calibr"))
 })
 

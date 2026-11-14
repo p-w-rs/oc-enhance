@@ -1,6 +1,6 @@
 [workspace]
 name = "oc-enhance"
-version = "1.5.0"
+version = "1.5.1"
 description = "Small enhancements to OpenCode: task notes, Pause/Resume, documents, project search, shared terminals"
 channels = ["conda-forge"]
 platforms = ["osx-arm64", "osx-64", "linux-64", "linux-aarch64"]
