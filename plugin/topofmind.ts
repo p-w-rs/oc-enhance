@@ -5,7 +5,7 @@
 // Cues go at the end of the context (prompt caching keeps working), each at most twice per user message, and not for
 // capabilities the agent already used for it.
 
-export interface Capability { readonly name: string; readonly kind: "tool" | "skill"; readonly summary: string }
+export interface Capability { readonly name: string; readonly kind: "tool" | "skill"; readonly summary: string; /** The full description (skills), for matching. */ readonly detail?: string }
 export interface Cue { readonly name: string; readonly why: string; readonly source: "rule" | "model" }
 
 /** One line per capability: the tool's or skill's own description, first sentence. */
@@ -13,7 +13,7 @@ export function capabilityIndex(tools: Record<string, { description?: string }> 
   const first = (text = "") => { const line = text.replace(/\s+/g, " ").trim(); const end = line.search(/(?<=[.!?])\s/); return (end > 0 ? line.slice(0, end) : line).slice(0, 180) }
   return [
     ...Object.entries(tools ?? {}).filter(([name]) => name !== "skill").map(([name, tool]) => ({ name, kind: "tool" as const, summary: first(tool.description) })),
-    ...skills.map(skill => ({ name: `skill:${skill.name}`, kind: "skill" as const, summary: first(skill.description) })),
+    ...skills.map(skill => ({ name: `skill:${skill.name}`, kind: "skill" as const, summary: first(skill.description), detail: (skill.description ?? "").replace(/\s+/g, " ").slice(0, 2000) })),
   ]
 }
 
@@ -83,11 +83,69 @@ const RULES: readonly Rule[] = [
 const WORDS = (text: string) => new Set(text.toLowerCase().match(/[a-z][a-z0-9+-]{3,}/g) ?? [])
 const GENERIC = new Set("use when load before work with this that from your into make about other only also each more them they then their what which have will should could would using used uses".split(" "))
 
+// Words that say nothing about which skill fits ("write", "file", "help", "code"): never count toward a match.
+const STOP = new Set(("a about above after again against all also am an and any are as at be because been before being below between both but by can could did do does doing done down during each few for from further had has have having he her here hers him his how i if in into is it its just let like me more most my no nor not now of off on once only or other our out over own same she should so some such than that the their them then there these they this those through to too under until up very was we were what when where which while who whom why will with would you your yours " +
+  "want need make made get got set show tell give find run runs running build use used using write writes written work works add new small big good best fast faster quick properly correctly right way thing things also please help code file files folder project repo app program script tool tools step steps ok okay just like across between inside" +
+  " load loads skill skills before done doing real real-world agent agents user users" +
+  " cli command commands option options flag flags config configuration json yaml toml csv text print output input message messages help error errors debug debugging fix test tests check checks convert time timestamp format formats line lines count sample first second string strings value values list read write create delete update open save call function functions api library libraries version versions install setup example examples simple basic one two three link links").split(" "))
+// Skill names that are everyday words: mentioning them is no sign the user means the skill.
+const EVERYDAY = new Set(["arrow", "rerun", "datasets", "diagrams", "report", "browser", "data", "math", "simulation", "polars"])
+const stem = (word: string) => word.length > 5 ? word.replace(/(ations?|ated|ates|ate|ating|ions?|ings?|ers?|ed|es|s)$/, "") : word.length > 4 ? word.replace(/s$/, "") : word
+/** Content words of a text, stemmed; hyphenated words count as a whole and as their parts ("isaac-sim", "isaac", "sim"). */
+export function contentWords(text: string): Set<string> {
+  const out = new Set<string>()
+  for (const raw of text.toLowerCase().match(/[a-z][a-z0-9+#.-]*[a-z0-9+#]|[a-z]/g) ?? []) {
+    for (const word of [raw, ...(raw.includes("-") || raw.includes(".") ? raw.split(/[-.]/) : [])]) {
+      if (word.length < 2 || STOP.has(word) || /^\d+$/.test(word)) continue
+      out.add(stem(word))
+    }
+  }
+  return out
+}
+
+/**
+ * Skills whose distinctive words the user's message uses, best first. A word counts by how few skills mention it (a
+ * word in one skill's description says a lot, a word in ten says little); words of the skill's own name count double.
+ * A skill is suggested only when its score is clearly high and clearly ahead of the others.
+ */
+export function skillMatches(index: readonly Capability[], message: string, options: { threshold?: number; max?: number } = {}): { name: string; score: number }[] {
+  const skills = index.filter(item => item.kind === "skill")
+  if (!skills.length) return []
+  const docs = skills.map(skill => { const name = skill.name.slice("skill:".length); return { skill, name: contentWords(name.replace(/[-_]/g, " ") + " " + name), words: contentWords(`${name} ${skill.detail ?? skill.summary}`) } })
+  const df = new Map<string, number>()
+  for (const doc of docs) for (const word of doc.words) df.set(word, (df.get(word) ?? 0) + 1)
+  const said = contentWords(message)
+  const lower = message.toLowerCase()
+  const n = docs.length
+  const scored = docs.map(doc => {
+    let score = 0, matched = 0
+    for (const word of said) if (doc.words.has(word)) { matched++; score += Math.log((n + 1) / df.get(word)!) * (doc.name.has(word) ? 2 : 1) }
+    // The skill's full name in the message ("odin", "opencv", "isaac-sim") is a strong signal, unless the name is an
+    // everyday word ("arrow", "rerun") that people use without meaning the tool.
+    const full = doc.skill.name.slice("skill:".length)
+    if (!EVERYDAY.has(full) && new RegExp(`(^|[^a-z0-9-])${full.replace(/[-_]/g, "[- _]?")}(?![a-z0-9-]|\\.[a-z0-9])`, "i").test(lower)) score += 6
+    // One shared word is too little evidence unless it is the name.
+    return { name: doc.skill.name, score: matched >= 2 || score >= 6 ? score : 0 }
+  }).filter(item => item.score > 0).sort((a, b) => b.score - a.score)
+  const threshold = options.threshold ?? 6
+  const top = scored[0]?.score ?? 0
+  if (top < threshold) return []
+  return scored.filter(item => item.score >= Math.max(threshold, top * 0.6)).slice(0, options.max ?? 2)
+}
+
 /** Cues by rules only: cheap, predictable, for the moments that are easy to recognize. */
 export function ruleCues(index: readonly Capability[], recent: Recent): Cue[] {
   const available = new Set(index.map(item => item.name))
   const cues: Cue[] = RULES.filter(rule => available.has(rule.name) && !recent.used.has(rule.name) && rule.when(recent)).map(rule => ({ name: rule.name, why: rule.why, source: "rule" as const }))
-  // A skill whose name, or several distinctive words of its description, appear in the user's message.
+  // A skill whose distinctive words the user's message uses (see skillMatches).
+  if (recent.user) {
+    for (const match of skillMatches(index, recent.user)) {
+      if (recent.used.has(match.name) || cues.some(cue => cue.name === match.name)) continue
+      const skill = index.find(item => item.name === match.name)!
+      cues.push({ name: skill.name, why: `load the ${skill.name.slice(6)} skill: ${skill.summary.slice(0, 120)}`, source: "rule" })
+    }
+  }
+  // A skill named explicitly ("with gnuplot", "ml-metrics"), or sharing several words with the user's message.
   if (recent.user) {
     const said = WORDS(recent.user)
     const lower = recent.user.toLowerCase()
@@ -107,7 +165,14 @@ export function ruleCues(index: readonly Capability[], recent: Recent): Cue[] {
 
 /** The tail message the agent sees. */
 export function cueText(cues: readonly Cue[]): string {
-  return `Top of mind for this step (oc-enhance; only if useful, ignore otherwise):\n${cues.map(cue => `- ${cue.name.startsWith("skill:") ? `skill ${cue.name.slice(6)}` : cue.name}: ${cue.why}`).join("\n")}`
+  const skills = cues.filter(cue => cue.name.startsWith("skill:") && cue.source === "rule")
+  const others = cues.filter(cue => !skills.includes(cue))
+  const lines: string[] = []
+  // A skill the request clearly matches is worth loading before the first step: it is cheap, and agents that explore
+  // first tend to forget it. Say so plainly; smaller models skip anything phrased as optional.
+  if (skills.length) lines.push(`Before you start, load ${skills.length === 1 ? "this skill" : "these skills"} with the skill tool (they match this request; skip only if clearly unrelated):\n${skills.map(cue => `- ${cue.name.slice(6)}: ${cue.why.replace(/^load the \S+ skill: /, "")}`).join("\n")}`)
+  if (others.length) lines.push(`Top of mind for this step (oc-enhance; only if useful, ignore otherwise):\n${others.map(cue => `- ${cue.name.startsWith("skill:") ? `skill ${cue.name.slice(6)}` : cue.name}: ${cue.why}`).join("\n")}`)
+  return lines.join("\n\n")
 }
 
 /** The prompt for the fast model (any chat model the user picked; it only ranks, it never acts). */

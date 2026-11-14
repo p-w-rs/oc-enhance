@@ -4,7 +4,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 export const PLUGIN_ID = "oc-enhance"
-export const VERSION = "1.4.4"
+export const VERSION = "1.5.0"
 
 /** `$XDG_DATA_HOME/oc-enhance` unless configured. */
 export const dataDirectory = (configured?: string) => configured ?? join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), PLUGIN_ID)

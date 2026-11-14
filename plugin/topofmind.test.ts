@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { capabilityIndex, cueText, modelPrompt, parseModelCues, parseModelRef, recent, ruleCues, TopOfMind } from "./topofmind.js"
+import { capabilityIndex, contentWords, cueText, modelPrompt, parseModelCues, parseModelRef, recent, ruleCues, skillMatches, TopOfMind } from "./topofmind.js"
 
 const tools = {
   read: { description: "Read a file." }, shell: { description: "Run a command." }, skill: { description: "Load a skill." },
@@ -40,6 +40,25 @@ test("rules fire for the moments they describe and not otherwise", () => {
   assert.deepEqual(ruleCues(capabilityIndex({ read: {} }), recent([user("open spec.docx")])), [], "only capabilities the session has")
 })
 
+test("skill matching: distinctive words of the full description pick the skill; everyday requests pick none", () => {
+  const many = capabilityIndex({}, [
+    { name: "opencv", description: "Short first sentence. Camera calibration with ChArUco, undistort/remap images, stereo rectification, solvePnP, ArUco/AprilTag detection, optical flow." },
+    { name: "polars", description: "Dataframes. Lazy queries, join_asof for aligning sensor streams, rolling windows, group_by_dynamic, streaming large parquet files." },
+    { name: "mcap", description: "Robotics logs. The mcap CLI (info, doctor, filter, recover), chunks, schemas, ros2 bag record, truncated files." },
+    { name: "odin", description: "The Odin language. Compiler flags, packages, foreign import of C libraries." },
+    { name: "arrow", description: "Columnar memory. Parquet, IPC, Flight, zero-copy C Data Interface." },
+    { name: "stats-inference", description: "Statistics. Choosing a test, effect sizes, confidence intervals, multiple comparisons." },
+  ])
+  const pick = (text: string) => skillMatches(many, text).map(match => match.name)
+  assert.deepEqual(pick("Calibrate my camera from checkerboard photos and undistort the images"), ["skill:opencv"], "words beyond the first sentence count")
+  assert.deepEqual(pick("Align two sensor streams by timestamp and compute rolling averages from parquet"), ["skill:polars"])
+  assert.deepEqual(pick("How do I call a C library from Odin?"), ["skill:odin"], "the skill's full name is a strong signal")
+  assert.deepEqual(pick("Draw an arrow on the slide"), [], "everyday words that are skill names are not enough")
+  assert.deepEqual(pick("Make the CLI print a help message"), [], "generic programming words do not count")
+  assert.deepEqual(pick("Fix the typo in the README title"), [])
+  assert.ok(contentWords("Isaac-Sim calibrations").has("isaac-sim") && contentWords("Isaac-Sim").has("isaac") && contentWords("calibrations").has("calibr"))
+})
+
 test("cues: each at most twice per user message; model cues join from the next request; model failure falls back to rules", async () => {
   const asked: string[] = []
   let reply = '{"cues": [{"name": "gnuplot", "why": "they want a figure next"}, {"name": "read", "why": "basic"}, {"name": "nope", "why": "x"}]}'
@@ -64,6 +83,7 @@ test("model answers are validated; refs and text formats", () => {
   assert.deepEqual(parseModelRef("opencode-go/deepseek-v4.1-flash"), { providerID: "opencode-go", id: "deepseek-v4.1-flash" })
   assert.deepEqual(parseModelRef("huggingface/Qwen/Qwen3.8-27B"), { providerID: "huggingface", id: "Qwen/Qwen3.8-27B" })
   assert.equal(parseModelRef(""), undefined)
-  assert.match(cueText([{ name: "skill:pixi", why: "w", source: "rule" }]), /^Top of mind for this step .*\n- skill pixi: w$/)
+  assert.match(cueText([{ name: "skill:pixi", why: "w", source: "model" }]), /^Top of mind for this step .*\n- skill pixi: w$/)
+  assert.match(cueText([{ name: "skill:pixi", why: "load the pixi skill: envs", source: "rule" }, { name: "reminder", why: "r", source: "rule" }]), /^Before you start, load this skill with the skill tool .*\n- pixi: envs\n\nTop of mind for this step .*\n- reminder: r$/)
   assert.match(modelPrompt(index, recent([user("hi")])), /Answer with JSON only/)
 })
